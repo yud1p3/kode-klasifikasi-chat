@@ -25,6 +25,15 @@ interface Message {
   isRateLimit?: boolean
 }
 
+function formatCooldown(s: number): string {
+  if (s >= 60) {
+    const m = Math.floor(s / 60)
+    const sec = s % 60
+    return sec > 0 ? `${m} menit ${sec} detik` : `${m} menit`
+  }
+  return `${s} detik`
+}
+
 const EXAMPLE_QUERIES = [
   'Permohonan cuti tahunan pegawai',
   'Pengadaan laptop untuk unit kerja',
@@ -218,7 +227,7 @@ function App() {
               {msg.results && msg.results.length > 0 && (
                 <div className="rounded-xl border border-gray-700 overflow-hidden bg-gray-900">
                   <div className="px-4 py-2 bg-gray-950 border-b border-gray-700 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    Top 3 Hasil Semantic
+                    Hasil Klasifikasi
                   </div>
                   {msg.results.map((r, j) => (
                     <div
@@ -230,12 +239,7 @@ function App() {
                       <span className="shrink-0 font-mono font-semibold text-cyan-400 w-28 text-xs">
                         {r.kode}
                       </span>
-                      <span className="flex-1 text-gray-300 truncate">{r.deskripsi}</span>
-                      <span className={`shrink-0 text-xs font-semibold tabular-nums ${
-                        r.similarity > 0.7 ? 'text-emerald-400' : r.similarity > 0.5 ? 'text-amber-400' : 'text-gray-500'
-                      }`}>
-                        {(r.similarity * 100).toFixed(1)}%
-                      </span>
+                      <span className="flex-1 text-gray-300">{r.deskripsi}</span>
                     </div>
                   ))}
                 </div>
@@ -268,7 +272,7 @@ function App() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
             </svg>
             <span className="flex-1">
-              API Key gratis dibatasi per menit. Silakan tunggu.
+              Mohon tunggu {formatCooldown(cooldown)}. API Key gratis dibatasi 30 detik per request.
             </span>
             <span className="font-mono font-bold text-amber-100 tabular-nums">{cooldown}s</span>
           </div>
@@ -278,7 +282,7 @@ function App() {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={cooldown !== null ? `Tunggu ${cooldown}s...` : 'Ketik perihal naskah di sini...'}
+            placeholder={cooldown !== null ? `Tunggu ${formatCooldown(cooldown)}...` : 'Ketik perihal naskah di sini...'}
             rows={1}
             disabled={isInputDisabled}
             className="flex-1 resize-none rounded-xl border border-gray-700 bg-gray-900 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/50 transition-colors font-sans disabled:opacity-40"

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use serde_json::Value;
 
 const EMBED_MODEL: &str = "gemini-embedding-2";
@@ -27,16 +28,17 @@ pub async fn embed_text(_api_key: &str, text: &str) -> anyhow::Result<Vec<f64>> 
     Ok(values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect())
 }
 
-pub async fn explain_classification(
+/// Kirim hasil similarity search ke Gemini untuk di-rerank.
+/// Gemini mengurutkan ulang berdasarkan: relevansi → spesifisitas path → similarity.
+/// Return: (reranked_results, explanation_text)
+pub async fn rerank_and_explain(
     _api_key: &str,
     message: &str,
     results: &[super::ClassificationResult],
-) -> anyhow::Result<String> {
-    // If API is at quota, fallback to top-1 result
-    let top = match results.first() {
-        Some(r) => format!("{} - {}", r.kode, r.deskripsi),
-        None => return Ok("Tidak ada hasil yang cocok.".into()),
-    };
+) -> anyhow::Result<(Vec<super::ClassificationResult>, String)> {
+    if results.is_empty() {
+        return Ok((vec![], "Tidak ada hasil yang cocok.".into()));
+    }
 
     let client = reqwest::Client::new();
     let url = format!(
@@ -44,38 +46,108 @@ pub async fn explain_classification(
         CHAT_MODEL, API_KEY
     );
 
+    // Bangun daftar kandidat untuk prompt
     let mut candidates = String::new();
-    for (i, r) in results.iter().take(3).enumerate() {
-        candidates.push_str(&format!("{}. {} - {}\n", i + 1, r.kode, r.deskripsi));
+    for (i, r) in results.iter().enumerate() {
+        candidates.push_str(&format!(
+            "{}. Kode: {} | Deskripsi: {} | Path: {} | Similarity: {:.4}\n",
+            i, r.kode, r.deskripsi, r.path, r.similarity
+        ));
     }
 
     let prompt = format!(
-        "Perihal: {}\nKandidat:\n{}\nPilih kode terbaik. Jawab pendek: Kode X - deskripsi. Alasan 1 kalimat.",
+        "Kamu adalah AI Arsiparis. Tugasmu mengurutkan ulang (rerank) daftar kandidat kode klasifikasi arsip.\n\n\
+         Perihal naskah: {}\n\n\
+         Daftar kandidat (hasil pencarian semantic, belum terurut sempurna):\n{}\n\
+         ATURAN PENGURUTAN ULANG (PRIORITAS BERURUT):\n\
+         1. RELEVANSI — Kode yang paling cocok dengan perihal naskah diberi peringkat lebih tinggi.\n\
+         2. SPESIFISITAS PATH — **ATURAN PALING PENTING**: Jika kode A adalah prefix kode B\
+            (misal A=041.03 dan B=041.03.01 atau B=041.03.01.01), maka B HARUS di atas A.\
+            JANGAN PERNAH tempatkan kode pendek (induk) di atas kode panjang (anak).\n\
+            Contoh benar: 041.03.01.01 > 041.03.01 > 041.03\n\
+            Contoh salah: 041.03 > 041.03.01.01 (INI DILARANG)\n\
+         3. SIMILARITY SCORE — Tiebreaker terakhir jika kode tidak memiliki hubungan prefix.\n\n\
+         Keluarkan HANYA JSON valid (tanpa markdown code block):\n\
+         {{\"reranked\":[{{\"rank\":1,\"kode\":\"XXX.XX\",\"alasan_singkat\":\"...\"}}],\
+         \"explanation\":\"Penjelasan 1-2 kalimat kenapa peringkat 1 adalah yang terbaik\"}}",
         message, candidates
     );
 
     let body = serde_json::json!({
         "contents": [{ "parts": [{"text": prompt}] }],
-        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 512 }
+        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 1024 }
     });
 
     match client.post(&url).json(&body).send().await {
         Ok(resp) if resp.status().is_success() => {
             let json: Value = resp.json().await?;
-            let text = json["candidates"][0]["content"]["parts"][0]["text"]
+            let raw_text = json["candidates"][0]["content"]["parts"][0]["text"]
                 .as_str()
-                .unwrap_or(&top);
-            Ok(text.to_string())
+                .unwrap_or("{}");
+
+            // Bersihkan markdown code fence jika ada
+            let cleaned = raw_text
+                .trim()
+                .trim_start_matches("```json")
+                .trim_start_matches("```")
+                .trim_end_matches("```")
+                .trim();
+
+            let parsed: Value = serde_json::from_str(cleaned).unwrap_or(Value::Null);
+
+            let explanation = parsed["explanation"]
+                .as_str()
+                .unwrap_or("Hasil diurutkan berdasarkan relevansi dan spesifisitas.")
+                .to_string();
+
+            // Bangun map kode → rank dari respons Gemini
+            let mut rank_map: HashMap<String, usize> = HashMap::new();
+            if let Some(arr) = parsed["reranked"].as_array() {
+                for (i, item) in arr.iter().enumerate() {
+                    if let Some(kode) = item["kode"].as_str() {
+                        rank_map.insert(kode.to_string(), i);
+                    }
+                }
+            }
+
+            // Step 1: Urutkan berdasarkan rank Gemini
+            let mut reranked = results.to_vec();
+            reranked.sort_by_key(|r| {
+                rank_map.get(&r.kode).copied().unwrap_or(usize::MAX)
+            });
+
+            // Step 2: Deterministic specificity enforcement
+            // Hard rule: child (kode lebih spesifik) HARUS di atas parent.
+            // Loop sampai tidak ada lagi parent-child yang terbalik.
+            loop {
+                let mut swapped = false;
+                for i in 0..reranked.len() {
+                    for j in (i + 1)..reranked.len() {
+                        // Jika results[j] adalah child dari results[i] (prefix match),
+                        // dan child ada di bawah parent → swap.
+                        if reranked[j].kode.starts_with(&format!("{}.", reranked[i].kode)) {
+                            reranked.swap(i, j);
+                            swapped = true;
+                            break;
+                        }
+                    }
+                    if swapped {
+                        break;
+                    }
+                }
+                if !swapped {
+                    break;
+                }
+            }
+
+            Ok((reranked, explanation))
         }
         Ok(resp) => {
             let err_body = resp.text().await.unwrap_or_default();
-            eprintln!("Explain API error: {}", err_body);
-            // Fallback: use top result
-            Ok(format!("Kode terbaik: {}. Pencarian semantic menghasilkan 3 kandidat, kode ini memiliki similarity tertinggi.", top))
+            anyhow::bail!("Gemini API error: {}", err_body);
         }
         Err(e) => {
-            eprintln!("Explain error: {}", e);
-            Ok(format!("Kode terbaik: {}. Pencarian semantic menghasilkan 3 kandidat, kode ini memiliki similarity tertinggi.", top))
+            anyhow::bail!("Gemini connection error: {}", e);
         }
     }
 }

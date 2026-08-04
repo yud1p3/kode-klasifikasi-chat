@@ -104,20 +104,23 @@ async fn chat(
         }
     };
 
-    let explanation = match gemini::explain_classification(
+    let (reranked, explanation) = match gemini::rerank_and_explain(
         &state.gemini_api_key,
         message,
         &results,
     ).await {
-        Ok(exp) => exp,
+        Ok((reranked, explanation)) => (reranked, explanation),
         Err(e) => {
             let err_str = e.to_string();
-            eprintln!("Explain error: {err_str}");
-            format!("\u{26a0}\u{fe0f} Gemini tidak dapat menghasilkan penjelasan: {}. Berikut hanya hasil pencarian semantic.", err_str)
+            eprintln!("Rerank error: {err_str}");
+            (
+                results.clone(),
+                format!("\u{26a0}\u{fe0f} Gemini tidak dapat melakukan reranking: {}. Hasil diurutkan berdasarkan similarity semantic.", err_str),
+            )
         }
     };
 
-    HttpResponse::Ok().json(ChatResponse { results, explanation })
+    HttpResponse::Ok().json(ChatResponse { results: reranked, explanation })
 }
 
 async fn health() -> HttpResponse {
