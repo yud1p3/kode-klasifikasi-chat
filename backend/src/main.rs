@@ -82,8 +82,26 @@ async fn chat(
         *last = now;
     }
 
+    // Langkah 1-2: untuk naskah panjang (upload file), minta Gemini pilih
+    // Fungsi/Urusan + perihal, lalu susun query embedding "FUNGSI > perihal".
+    // Fallback ke teks asli bila gagal (mis. rate limit / Gemini off).
+    let mut embed_query = message.to_string();
+    if message.chars().count() > 300 {
+        match state.key_rotator.try_all(|key| {
+            let msg = message.to_string();
+            async move { gemini::select_fungsi(&key, &msg).await }
+        }).await {
+            Ok(((fungsi, perihal), _)) if !fungsi.is_empty() && !perihal.is_empty() => {
+                eprintln!("Fungsi terpilih: {fungsi} | Perihal: {perihal}");
+                embed_query = format!("{} > {}", fungsi, perihal);
+            }
+            Ok(_) => eprintln!("select_fungsi: field kosong, pakai teks asli"),
+            Err(e) => eprintln!("select_fungsi gagal, pakai teks asli: {e}"),
+        }
+    }
+
     let embedding = match state.key_rotator.try_all(|key| {
-        let msg = message.to_string();
+        let msg = embed_query.clone();
         async move { gemini::embed_text(&key, &msg).await }
     }).await {
         Ok((emb, _used_key)) => emb,
