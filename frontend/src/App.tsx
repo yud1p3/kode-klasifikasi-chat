@@ -5,38 +5,6 @@ import mammoth from 'mammoth'
 // Set PDF.js worker untuk versi 5.x
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
 
-// Helper: ekstrak perihal dari teks naskah (cari "Perihal:" atau "Hal:")
-function extractPerihal(text: string): string {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-
-  // Frasa penanda header/kop surat — jika ada dalam baris → skip
-  const HEADER_FRASES = [
-    'PEMERINTAH', 'KABUPATEN', 'KOTA', 'PROVINSI', 'PROV',
-    'DINAS', 'BALAI', 'BADAN', 'SEKRETARIAT', 'KEMENTERIAN',
-    'GUBERNUR', 'WALIKOTA', 'BUPATI', 'CAMAT',
-    'SURAT KEPUTUSAN', 'NOTA DINAS', 'MEMORANDUM',
-    'UNDANGAN', 'AGENDA', 'BERITA ACARA',
-    'RAPAT PLENARY', 'KOORDINASI', 'EVALUASI',
-  ]
-
-  // LANGKAH 1: cari baris Perihal / Hal secara eksplisit
-  for (const line of lines.slice(0, 10)) {
-    const m = line.match(/^(?:Perihal|Hal|Subjek|Subject)\s*[:;.]\s*(.+)/i)
-    if (m) return m[1].trim()
-  }
-
-  // LANGKAH 2: ambil baris pertama yang BUKAN header
-  for (const line of lines) {
-    if (line.length < 12) continue
-    const upper = line.toUpperCase()
-    if (!HEADER_FRASES.some(frase => upper.includes(frase))) {
-      return line.slice(0, 120)
-    }
-  }
-
-  // LANGKAH 3: tidak ditemukan — kembali '' (UI akan tampil nama file)
-  return ''
-}
 
 interface ClassificationResult {
   id: number
@@ -170,12 +138,11 @@ function App() {
         return
       }
 
-      const perihal = extractPerihal(cleaned)
       setInput(cleaned)
       // Tampilkan pesan bahwa file sedang dianalisa
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `\u{1F4C4} File "${file.name}" berhasil diekstrak.\n${perihal ? `📄 Perihal: ${perihal}` : 'Tidak menemukan perihal spesifik.'}\n\nTeks naskah telah dimasukkan ke area chat. Anda bisa klik kirim untuk mencari kode klasifikasi.`,
+        content: `📄 File "${file.name}" berhasil diekstrak ke area chat, silahkan kirim untuk mencari kode klasifikasi`,
         isRateLimit: false
       }])
       e.target.value = ''
