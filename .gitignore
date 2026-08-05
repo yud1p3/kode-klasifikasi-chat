@@ -3,3 +3,6 @@ dist/
 node_modules/
 .env
 *.zip
+.env-key
+.env.tmp
+.codewhaleignore

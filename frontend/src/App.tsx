@@ -1,4 +1,42 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import * as pdfjsLib from 'pdfjs-dist'
+import mammoth from 'mammoth'
+
+// Set PDF.js worker untuk versi 5.x
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
+
+// Helper: ekstrak perihal dari teks naskah (cari "Perihal:" atau "Hal:")
+function extractPerihal(text: string): string {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+
+  // Frasa penanda header/kop surat — jika ada dalam baris → skip
+  const HEADER_FRASES = [
+    'PEMERINTAH', 'KABUPATEN', 'KOTA', 'PROVINSI', 'PROV',
+    'DINAS', 'BALAI', 'BADAN', 'SEKRETARIAT', 'KEMENTERIAN',
+    'GUBERNUR', 'WALIKOTA', 'BUPATI', 'CAMAT',
+    'SURAT KEPUTUSAN', 'NOTA DINAS', 'MEMORANDUM',
+    'UNDANGAN', 'AGENDA', 'BERITA ACARA',
+    'RAPAT PLENARY', 'KOORDINASI', 'EVALUASI',
+  ]
+
+  // LANGKAH 1: cari baris Perihal / Hal secara eksplisit
+  for (const line of lines.slice(0, 10)) {
+    const m = line.match(/^(?:Perihal|Hal|Subjek|Subject)\s*[:;.]\s*(.+)/i)
+    if (m) return m[1].trim()
+  }
+
+  // LANGKAH 2: ambil baris pertama yang BUKAN header
+  for (const line of lines) {
+    if (line.length < 12) continue
+    const upper = line.toUpperCase()
+    if (!HEADER_FRASES.some(frase => upper.includes(frase))) {
+      return line.slice(0, 120)
+    }
+  }
+
+  // LANGKAH 3: tidak ditemukan — kembali '' (UI akan tampil nama file)
+  return ''
+}
 
 interface ClassificationResult {
   id: number
@@ -11,6 +49,7 @@ interface ClassificationResult {
 interface ChatResponse {
   results: ClassificationResult[]
   explanation: string
+  perihal: string
 }
 
 interface ErrorResponse {
@@ -44,10 +83,12 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [extracting, setExtracting] = useState(false)
   const [apiAvailable, setApiAvailable] = useState<boolean | null>(null)
   const [cooldown, setCooldown] = useState<number | null>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 
   useEffect(() => {
@@ -81,6 +122,73 @@ function App() {
       })
     }, 1000)
   }, [])
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setExtracting(true)
+    try {
+      let text = ''
+      const ext = file.name.split('.').pop()?.toLowerCase()
+
+      if (ext === 'pdf') {
+        const arrayBuffer = await file.arrayBuffer()
+        const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
+        const pages: string[] = []
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i)
+          const content = await page.getTextContent()
+          const pageText = content.items
+            .map((item: any) => 'str' in item ? item.str : '')
+            .join(' ')
+          pages.push(pageText)
+        }
+        text = pages.join('\n')
+      } else if (ext === 'docx') {
+        const arrayBuffer = await file.arrayBuffer()
+        const result = await mammoth.extractRawText({ arrayBuffer })
+        text = result.value
+      } else {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: '❌ Format file tidak didukung. Gunakan PDF atau DOCX saja.',
+          isRateLimit: false
+        }])
+        e.target.value = ''
+        return
+      }
+
+      const cleaned = text.replace(/\n{3,}/g, '\n\n').replace(/\s{2,}/g, ' ').trim()
+      if (!cleaned || cleaned.length < 5) {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: '❌ Tidak ada teks yang berhasil diekstrak dari file.',
+          isRateLimit: false
+        }])
+        e.target.value = ''
+        return
+      }
+
+      const perihal = extractPerihal(cleaned)
+      setInput(cleaned)
+      // Tampilkan pesan bahwa file sedang dianalisa
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `\u{1F4C4} File "${file.name}" berhasil diekstrak.\n${perihal ? `📄 Perihal: ${perihal}` : 'Tidak menemukan perihal spesifik.'}\n\nTeks naskah telah dimasukkan ke area chat. Anda bisa klik kirim untuk mencari kode klasifikasi.`,
+        isRateLimit: false
+      }])
+      e.target.value = ''
+    } catch {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: '❌ Gagal mengekstrak teks dari file.',
+        isRateLimit: false
+      }])
+    } finally {
+      setExtracting(false)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -184,8 +292,8 @@ function App() {
               </h2>
               <p className="text-sm text-gray-400 leading-relaxed">
                 Masukkan <strong className="text-gray-200">perihal</strong> naskah dinas,
-                dan AI akan mencari kode klasifikasi paling sesuai berdasarkan{' '}
-                <em className="text-violet-400">vector similarity</em> di database pgvector.
+                atau <strong className="text-gray-200">upload file</strong> PDF/DOCX,{' '}
+                dan AI akan mencari kode klasifikasi paling sesuai.
               </p>
             </div>
             <div className="w-full space-y-2">
@@ -212,7 +320,6 @@ function App() {
             </div>
 
             <div className={`max-w-[80%] space-y-3 ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-              {/* Message bubble */}
               <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                 msg.role === 'user'
                   ? 'bg-blue-600 text-white rounded-br-md'
@@ -223,23 +330,21 @@ function App() {
                 {msg.content}
               </div>
 
-              {/* Results Table */}
               {msg.results && msg.results.length > 0 && (
-                <div className="rounded-xl border border-gray-700 overflow-hidden bg-gray-900">
-                  <div className="px-4 py-2 bg-gray-950 border-b border-gray-700 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    Hasil Klasifikasi
-                  </div>
+                <div className="bg-gray-850 rounded-xl border border-gray-700 overflow-hidden">
                   {msg.results.map((r, j) => (
-                    <div
-                      key={j}
-                      className={`flex items-center gap-3 px-4 py-2.5 text-sm border-b border-gray-800 last:border-b-0 hover:bg-gray-850 transition-colors ${
-                        j === 0 ? 'bg-violet-950/30' : ''
-                      }`}
-                    >
-                      <span className="shrink-0 font-mono font-semibold text-cyan-400 w-28 text-xs">
-                        {r.kode}
-                      </span>
-                      <span className="flex-1 text-gray-300">{r.deskripsi}</span>
+                    <div key={j} className={`px-4 py-3 ${
+                      j === 0 ? 'bg-violet-950/30' : ''
+                    }`}>
+                      <div className="flex items-center gap-3">
+                        <span className="shrink-0 font-mono font-semibold text-cyan-400 text-xs">
+                          {r.kode}
+                        </span>
+                        <span className="flex-1 text-gray-300">{r.deskripsi}</span>
+                      </div>
+                      <div className="mt-1 ml-0 text-xs text-gray-500">
+                        {r.path}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -264,48 +369,78 @@ function App() {
         <div ref={chatEndRef} />
       </main>
 
-      {/* Footer Input */}
-      <footer className="shrink-0 px-6 py-4 bg-gray-950 border-t border-gray-800">
-        {cooldown !== null && (
-          <div className="mb-3 px-4 py-2 rounded-xl bg-amber-950/50 border border-amber-800 text-sm text-amber-300 flex items-center gap-2">
-            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-            </svg>
-            <span className="flex-1">
-              Mohon tunggu {formatCooldown(cooldown)}. API Key gratis dibatasi 30 detik per request.
-            </span>
-            <span className="font-mono font-bold text-amber-100 tabular-nums">{cooldown}s</span>
+      {/* Input Area */}
+      <footer className="shrink-0 border-t border-gray-800 bg-gray-950 px-6 py-4">
+        {/* Warning about confidential documents */}
+        {messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].content.includes('tidak dapat melakukan reranking') && (
+          <div className="mb-3 p-3 bg-amber-950/50 border border-amber-800/50 rounded-xl text-xs text-amber-300">
+            ⚠️ Gemini gagal melakukan reranking. Hasil ditampilkan berdasarkan similarity semantic. Pastikan API key valid dan database pgvector terisi data.
           </div>
         )}
-        <form onSubmit={handleSubmit} className="flex gap-3">
-          <textarea
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={cooldown !== null ? `Tunggu ${formatCooldown(cooldown)}...` : 'Ketik perihal naskah di sini...'}
-            rows={1}
-            disabled={isInputDisabled}
-            className="flex-1 resize-none rounded-xl border border-gray-700 bg-gray-900 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/50 transition-colors font-sans disabled:opacity-40"
-          />
-          <button
-            type="submit"
-            disabled={isInputDisabled || !input.trim()}
-            className="shrink-0 px-5 py-3 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors"
-          >
+
+        <form onSubmit={handleSubmit} className="flex gap-3 items-end">
+          <div className="relative flex-1">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Ketik perihal naskah... atau upload file PDF/DOCX"
+              disabled={isInputDisabled}
+              rows={2}
+              className="w-full resize-none rounded-xl border border-gray-700 bg-gray-800 px-4 py-3 pr-12 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-600 focus:border-transparent"
+            />
+          </div>
+
+          <div className="flex gap-2 items-center">
+            {/* Tombol upload file — selalu terlihat */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title="Upload PDF/DOCX"
+              disabled={isInputDisabled}
+              className={`shrink-0 w-10 h-10 rounded-xl border border-gray-700 bg-gray-800 flex items-center justify-center transition-colors ${
+                isInputDisabled
+                  ? 'text-gray-600 cursor-not-allowed opacity-50'
+                  : 'text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+              </svg>
+            </button>
+
             {loading ? (
-              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            ) : cooldown !== null ? (
-              <span className="font-mono tabular-nums">{cooldown}</span>
+              <button type="button" disabled className="w-10 h-10 rounded-xl bg-violet-600 text-white flex items-center justify-center opacity-50">
+                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              </button>
             ) : (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-              </svg>
+              <button
+                type="submit"
+                disabled={!input.trim() || isInputDisabled}
+                className="shrink-0 w-10 h-10 rounded-xl bg-violet-600 text-white flex items-center justify-center hover:bg-violet-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                </svg>
+              </button>
             )}
-          </button>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.docx"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+          </div>
         </form>
+
+        <p className="text-xs text-gray-600 mt-2 text-center">
+          Upload file PDF atau DOCX untuk analisa otomatis. Naskah pemerintah Indonesia direkomendasikan.
+        </p>
       </footer>
     </div>
   )

@@ -29,6 +29,7 @@ struct ClassificationResult {
 #[derive(Debug, Serialize)]
 struct ChatResponse {
     results: Vec<ClassificationResult>,
+    perihal: String,
     explanation: String,
 }
 
@@ -104,23 +105,24 @@ async fn chat(
         }
     };
 
-    let (reranked, explanation) = match gemini::rerank_and_explain(
+    let (reranked, perihal, explanation) = match gemini::rerank_and_explain(
         &state.gemini_api_key,
         message,
         &results,
     ).await {
-        Ok((reranked, explanation)) => (reranked, explanation),
+        Ok((reranked, explanation, perihal)) => (reranked, perihal, explanation),
         Err(e) => {
             let err_str = e.to_string();
             eprintln!("Rerank error: {err_str}");
             (
                 results.clone(),
+                String::new(),
                 format!("\u{26a0}\u{fe0f} Gemini tidak dapat melakukan reranking: {}. Hasil diurutkan berdasarkan similarity semantic.", err_str),
             )
         }
     };
 
-    HttpResponse::Ok().json(ChatResponse { results: reranked, explanation })
+    HttpResponse::Ok().json(ChatResponse { results: reranked, perihal, explanation })
 }
 
 async fn health() -> HttpResponse {
