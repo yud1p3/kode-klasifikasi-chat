@@ -4,11 +4,14 @@ use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::env;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 mod gemini;
+mod key_rotator;
 mod search;
+
+use key_rotator::KeyRotator;
 
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -42,8 +45,9 @@ struct ErrorResponse {
 
 struct AppState {
     db: PgPool,
-    gemini_api_key: String,
-    last_request: Mutex<Instant>,
+    key_rotator: Arc<KeyRotator>,
+    last_request: std::sync::Mutex<std::time::Instant>,
+    rate_limit_interval: Duration,
 }
 
 async fn chat(
@@ -58,16 +62,17 @@ async fn chat(
         });
     }
 
+    // Rate limiter — hanya di level request, bukan per-key
     {
         let mut last = state.last_request.lock().unwrap();
-        let now = Instant::now();
-        if let Some(next_allowed) = last.checked_add(MIN_REQUEST_INTERVAL) {
+        let now = std::time::Instant::now();
+        if let Some(next_allowed) = last.checked_add(state.rate_limit_interval) {
             if now < next_allowed {
                 let wait = (next_allowed - now).as_secs() + 1;
                 return HttpResponse::TooManyRequests().json(ErrorResponse {
                     error: format!(
                         "Mohon tunggu {} detik. API Key gratis dibatasi {} detik per request.",
-                        wait, MIN_REQUEST_INTERVAL.as_secs()
+                        wait, state.rate_limit_interval.as_secs()
                     ),
                     retry_after_secs: Some(wait),
                 });
@@ -76,15 +81,18 @@ async fn chat(
         *last = now;
     }
 
-    let embedding = match gemini::embed_text(&state.gemini_api_key, message).await {
-        Ok(emb) => emb,
+    let embedding = match state.key_rotator.try_all(|key| {
+        let msg = message.to_string();
+        async move { gemini::embed_text(&key, &msg).await }
+    }).await {
+        Ok((emb, _used_key)) => emb,
         Err(e) => {
             let err_str = e.to_string();
-            eprintln!("Embedding error: {err_str}");
+            eprintln!("Embedding error (all keys exhausted): {err_str}");
             if err_str.contains("429") || err_str.contains("RESOURCE_EXHAUSTED") {
                 return HttpResponse::TooManyRequests().json(ErrorResponse {
-                    error: "API Key Gemini sedang sibuk (rate limit). Coba lagi dalam 30 detik.".into(),
-                    retry_after_secs: Some(30),
+                    error: "Semua API Key Gemini sedang sibuk (rate limit). Coba lagi dalam beberapa menit.".into(),
+                    retry_after_secs: Some(180),
                 });
             }
             return HttpResponse::InternalServerError().json(ErrorResponse {
@@ -105,15 +113,15 @@ async fn chat(
         }
     };
 
-    let (reranked, perihal, explanation) = match gemini::rerank_and_explain(
-        &state.gemini_api_key,
-        message,
-        &results,
-    ).await {
-        Ok((reranked, explanation, perihal)) => (reranked, perihal, explanation),
+    let (reranked, perihal, explanation) = match state.key_rotator.try_all(|key| {
+        let msg = message.to_string();
+        let res = results.clone();
+        async move { gemini::rerank_and_explain(&key, &msg, &res).await }
+    }).await {
+        Ok((result, _used_key)) => result,
         Err(e) => {
             let err_str = e.to_string();
-            eprintln!("Rerank error: {err_str}");
+            eprintln!("Rerank error (all keys exhausted): {err_str}");
             (
                 results.clone(),
                 String::new(),
@@ -135,8 +143,25 @@ async fn main() -> anyhow::Result<()> {
 
     let database_url = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/klasifikasi_arsip".into());
-    let gemini_api_key = env::var("GEMINI_API_KEY")
-        .unwrap_or_else(|_| "free-rotation".into());
+
+    // Baca multi key dari GEMINI_API_KEYS (comma-separated)
+    let api_keys_raw = env::var("GEMINI_API_KEYS")
+        .or_else(|_| env::var("GEMINI_API_KEY")) // fallback ke key tunggal lama
+        .unwrap_or_else(|_| "".into());
+
+    let keys: Vec<String> = api_keys_raw
+        .split(',')
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect();
+
+    if keys.is_empty() {
+        eprintln!("⚠️  WARNING: Tidak ada GEMINI_API_KEY ditemukan!");
+        eprintln!("    Set GEMINI_API_KEYS='key1,key2,key3' atau GEMINI_API_KEY='key'");
+    } else {
+        println!("🔑 Loaded {} Gemini API key(s)", keys.len());
+    }
+
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
     let port: u16 = env::var("PORT")
         .unwrap_or_else(|_| "3000".into())
@@ -148,12 +173,16 @@ async fn main() -> anyhow::Result<()> {
         .connect(&database_url)
         .await?;
 
+    let key_rotator = Arc::new(KeyRotator::new(keys));
+    let rate_limit_interval = Duration::from_secs(MIN_REQUEST_INTERVAL.as_secs());
+
     println!("Server running on http://{}:{}", host, port);
 
     let state = web::Data::new(AppState {
         db,
-        gemini_api_key,
-        last_request: Mutex::new(Instant::now() - MIN_REQUEST_INTERVAL),
+        key_rotator,
+        last_request: std::sync::Mutex::new(std::time::Instant::now() - MIN_REQUEST_INTERVAL),
+        rate_limit_interval,
     });
 
     HttpServer::new(move || {

@@ -4,17 +4,55 @@ use serde_json::Value;
 const EMBED_MODEL: &str = "gemini-embedding-2";
 const CHAT_MODEL: &str = "gemini-flash-lite-latest";
 
-pub async fn embed_text(_api_key: &str, text: &str) -> anyhow::Result<Vec<f64>> {
+/// Wrapper untuk HTTP POST ke Gemini dengan exponential-backoff retry.
+/// Max 3 percobaan (delay: 500ms, 1500ms, 4000ms).
+/// Return `(Response, bool)` di mana bool=true bila kena 429.
+/// Tidak membaca body di sini — caller yang baca body untuk parsing/error.
+/// Hindari bug: `resp.text()` consume resp, lalu resp dipakai lagi setelahnya.
+async fn post_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+) -> anyhow::Result<(reqwest::Response, bool)> {
+    let delays_ms = [500u64, 1500, 4000];
+    let mut last_error = None;
+
+    for (i, &delay_ms) in delays_ms.iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        match client.post(url).json(body).send().await {
+            Ok(resp) => {
+                // Cegah rate limit berulang via retry eksponensial
+                if resp.status() == 429 {
+                    eprintln!("⚡ 429 attempt #{}/3, retrying...", i + 1);
+                    last_error = Some(anyhow::anyhow!("RATE_LIMIT"));
+                    continue;
+                }
+                // Semua status lain langsung dikembalikan ke caller
+                // (caller sendiri akan baca .text() / .json() dari resp)
+                return Ok((resp, false));
+            }
+            Err(e) => {
+                last_error = Some(e.into());
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Semua percobaan gagal.")))
+}
+
+pub async fn embed_text(api_key: &str, text: &str) -> anyhow::Result<Vec<f64>> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:embedContent?key={}",
-        EMBED_MODEL, _api_key
+        EMBED_MODEL, api_key
     );
     let body = serde_json::json!({
         "content": { "parts": [{"text": text}] },
         "outputDimensionality": 768
     });
-    let resp = client.post(&url).json(&body).send().await?;
+
+    let (resp, _) = post_with_retry(&client, &url, &body).await?;
     if !resp.status().is_success() {
         let err_body = resp.text().await?;
         anyhow::bail!("Gemini embed API error: {}", err_body);
@@ -27,7 +65,7 @@ pub async fn embed_text(_api_key: &str, text: &str) -> anyhow::Result<Vec<f64>> 
 }
 
 pub async fn rerank_and_explain(
-    _api_key: &str,
+    api_key: &str,
     message: &str,
     results: &[super::ClassificationResult],
 ) -> anyhow::Result<(Vec<super::ClassificationResult>, String, String)> {
@@ -38,7 +76,7 @@ pub async fn rerank_and_explain(
     let client = reqwest::Client::new();
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        CHAT_MODEL, _api_key
+        CHAT_MODEL, api_key
     );
 
     let mut candidates = String::new();
@@ -80,73 +118,62 @@ pub async fn rerank_and_explain(
         "generationConfig": { "temperature": 0.1, "maxOutputTokens": 1024 }
     });
 
-    match client.post(&url).json(&body).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let json: Value = resp.json().await?;
-            let raw_text = json["candidates"][0]["content"]["parts"][0]["text"]
-                .as_str()
-                .unwrap_or("{}");
+    let (resp, _) = post_with_retry(&client, &url, &body).await?;
+    if !resp.status().is_success() {
+        let err_body = resp.text().await?.trim().to_string();
+        anyhow::bail!("Gemini API error: {}", err_body);
+    }
 
-            let cleaned = raw_text
-                .trim()
-                .trim_start_matches("```json")
-                .trim_start_matches("```")
-                .trim_end_matches("```")
-                .trim();
+    let json: Value = resp.json().await?;
+    let raw_text = json["candidates"][0]["content"]["parts"][0]["text"]
+        .as_str()
+        .unwrap_or("{}");
 
-            let parsed: Value = serde_json::from_str(cleaned).unwrap_or(Value::Null);
+    let cleaned = raw_text
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
 
-            let perihal = parsed["perihal"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
+    let parsed: Value = serde_json::from_str(cleaned).unwrap_or(Value::Null);
 
-            let explanation = parsed["explanation"]
-                .as_str()
-                .unwrap_or("Kode terbaik dipilih berdasarkan kecocokan dengan isi naskah.")
-                .to_string();
+    let perihal = parsed["perihal"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
 
-            let mut rank_map: HashMap<String, usize> = HashMap::new();
-            if let Some(arr) = parsed["reranked"].as_array() {
-                for (i, item) in arr.iter().enumerate() {
-                    if let Some(kode) = item["kode"].as_str() {
-                        rank_map.insert(kode.to_string(), i);
-                    }
-                }
+    let explanation = parsed["explanation"]
+        .as_str()
+        .unwrap_or("Kode terbaik dipilih berdasarkan kecocokan dengan isi naskah.")
+        .to_string();
+
+    let mut rank_map: HashMap<String, usize> = HashMap::new();
+    if let Some(arr) = parsed["reranked"].as_array() {
+        for (i, item) in arr.iter().enumerate() {
+            if let Some(kode) = item["kode"].as_str() {
+                rank_map.insert(kode.to_string(), i);
             }
-
-            let mut reranked = results.to_vec();
-            reranked.sort_by_key(|r| {
-                rank_map.get(&r.kode).copied().unwrap_or(usize::MAX)
-            });
-
-            loop {
-                let mut swapped = false;
-                for i in 0..reranked.len() {
-                    for j in (i + 1)..reranked.len() {
-                        if reranked[j].kode.starts_with(&format!("{}.", reranked[i].kode)) {
-                            reranked.swap(i, j);
-                            swapped = true;
-                            break;
-                        }
-                    }
-                    if swapped {
-                        break;
-                    }
-                }
-                if !swapped {
-                    break;
-                }
-            }
-
-            Ok((reranked, explanation, perihal))
-        }
-        Ok(resp) => {
-            let err_body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Gemini API error: {}", err_body);
-        }
-        Err(e) => {
-            anyhow::bail!("Gemini connection error: {}", e);
         }
     }
+
+    let mut reranked = results.to_vec();
+    reranked.sort_by_key(|r| rank_map.get(&r.kode).copied().unwrap_or(usize::MAX));
+
+    // Sort insertion: pastikan kode lebih spesifik selalu di atas kode parent-nya
+    // (e.g., 041.03.01 harus di atas 041.03)
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for i in 0..reranked.len() - 1 {
+            if reranked[i+1].kode.starts_with(&format!("{}.{}", reranked[i].kode, ""))
+                && !reranked[i].kode.ends_with(&reranked[i+1].kode)
+            {
+                reranked.swap(i, i+1);
+                changed = true;
+            }
+        }
+    }
+
+    Ok((reranked, explanation, perihal))
 }
