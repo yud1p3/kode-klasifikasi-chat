@@ -89,7 +89,7 @@ async fn chat(
     if message.chars().count() > 300 {
         // Baca 45 Fungsi/Urusan induk langsung dari DB (distinct level-1 path)
         let daftar_fungsi: String = match sqlx::query_scalar::<_, String>(
-            "SELECT DISTINCT trim(deskripsi) FROM klasifikasi_embedding WHERE kode ~ '^[0-9]{3}$' ORDER BY 1"
+            "SELECT DISTINCT trim(deskripsi) FROM klasifikasi_embedding WHERE LENGTH(kode) = 3 ORDER BY 1"
         ).fetch_all(&state.db).await {
             Ok(rows) => rows.join(", "),
             Err(e) => { eprintln!("gagal baca fungsi DB: {e}"); String::new() }
