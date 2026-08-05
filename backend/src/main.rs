@@ -87,9 +87,17 @@ async fn chat(
     // Fallback ke teks asli bila gagal (mis. rate limit / Gemini off).
     let mut embed_query = message.to_string();
     if message.chars().count() > 300 {
+        // Baca 45 Fungsi/Urusan induk langsung dari DB (distinct level-1 path)
+        let daftar_fungsi: String = match sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT trim(split_part(path, '>', 1)) FROM klasifikasi_embedding WHERE path LIKE '%>%' ORDER BY 1"
+        ).fetch_all(&state.db).await {
+            Ok(rows) => rows.join(", "),
+            Err(e) => { eprintln!("gagal baca fungsi DB: {e}"); String::new() }
+        };
         match state.key_rotator.try_all(|key| {
             let msg = message.to_string();
-            async move { gemini::select_fungsi(&key, &msg).await }
+            let df = daftar_fungsi.clone();
+            async move { gemini::select_fungsi(&key, &msg, &df).await }
         }).await {
             Ok(((fungsi, perihal), _)) if !fungsi.is_empty() && !perihal.is_empty() => {
                 eprintln!("Fungsi terpilih: {fungsi} | Perihal: {perihal}");

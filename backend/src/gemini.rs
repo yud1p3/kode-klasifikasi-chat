@@ -38,13 +38,13 @@ pub async fn embed_text(api_key: &str, text: &str) -> anyhow::Result<Vec<f64>> {
 
 /// Pilih fungsi/urusan (1 dari 45) + perihal dari naskah, utk menyusun query embedding.
 /// Kembalikan (fungsi, perihal).
-pub async fn select_fungsi(api_key: &str, text: &str) -> anyhow::Result<(String, String)> {
+pub async fn select_fungsi(api_key: &str, text: &str, daftar_fungsi: &str) -> anyhow::Result<(String, String)> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
         CHAT_MODEL, api_key
     );
-    let daftar = "AGRARIA, BENCANA, KECELAKAAN DAN KONDISI BAHAYA, BINA PEMBANGUNAN DAERAH, HUBUNGAN MASYARAKAT, HUKUM, KEARSIPAN, KEBUDAYAAN, KELAUTAN DAN PERIKANAN, KEPEGAWAIAN, KEPENDUDUKAN DAN KELUARGA BERENCANA, KEPENDUDUKAN DAN PENCATATAN SIPIL, KESATUAN BANGSA DAN POLITIK, KESEHATAN, KETATAUSAHAAN DAN KERUMAHTANGGAAN, KETENAGAKERJAAN, KEUANGAN, KOMUNIKASI DAN INFROMATIKA, KOPERASI DAN UKM, LINGKUNGAN HIDUP, ORGANISASI DAN KETATALAKSANAAN, OTONOMI DAERAH, PARIWISATA, PEKERJAAN UMUM, PEMBERDAYAAN MASYARAKAT DAN DESA, PEMBERDAYAAN PEREMPUAN DAN PERLINDUNGAN ANAK, PEMERINTAHAN DAERAH, PEMUDA DAN OLAHRAGA, PENANAMAN MODAL, PENDIDIKAN, PENDIDIKAN DAN PELATIHAN, PENELITIAN, PENGKAJIAN, PENGEMBANGAN, PEREKAYASAAN, PENERAPAN, SERTA PENDAYAGUNAAN ILMU PENGETAHUAN DAN TEKNOLOGI, PENGADAAN, PERDAGANGAN, PERENCANAAN PEMBANGUNAN, PERHUBUNGAN, PERINDUSTRIAN, PERLENGKAPAN/PERALATAN/KEKAYAAN DAERAH, PERPUSTAKAAN, PERSANDIAN, PERTANIAN, PERUMAHAN RAKYAT, POLISI PAMONG PRAJA DAN PELINDUNGAN MASYARAKAT, SOSIAL, STATISTIK, TRANSMIGRASI";
+    let daftar = daftar_fungsi;
     let prompt = format!(
         "Anda arsiparis. Dari teks naskah dinas berikut, tentukan SATU Fungsi/Urusan yang paling sesuai dengan SUBSTANSI MASALAH naskah (bukan bentuk surat), dan Tuliskan perihal singkat naskah.\n\nDaftar Fungsi/Urusan:\n{daftar}\n\nTeks naskah:\n{text}\n\nKeluarkan HANYA JSON valid: {{\"fungsi\":\"NAMA PERSIS DARI DAFTAR\",\"perihal\":\"perihal singkat\"}}",
         daftar = daftar, text = &text.chars().take(3000).collect::<String>()
