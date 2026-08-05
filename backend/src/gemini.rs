@@ -46,7 +46,7 @@ pub async fn select_fungsi(api_key: &str, text: &str, daftar_fungsi: &str) -> an
     );
     let daftar = daftar_fungsi;
     let prompt = format!(
-        "Anda arsiparis. Dari teks naskah dinas berikut, tentukan SATU Fungsi/Urusan yang paling sesuai dengan SUBSTANSI MASALAH naskah (bukan bentuk surat), dan Tuliskan perihal singkat naskah.\n\nDaftar Fungsi/Urusan:\n{daftar}\n\nTeks naskah:\n{text}\n\nKeluarkan HANYA JSON valid: {{\"fungsi\":\"NAMA PERSIS DARI DAFTAR\",\"perihal\":\"perihal singkat\"}}",
+        "Anda arsiparis. Dari teks naskah dinas berikut, tentukan SATU Fungsi/Urusan yang paling sesuai dengan SUBSTANSI MASALAH naskah (bukan bentuk surat), dan Tuliskan perihal singkat naskah. BUANG keterangan nama orang dan periode waktu dari perihal (contoh: \"usulan kenaikan pangkat atas nama X\" cukup \"usulan kenaikan pangkat\"; \"laporan realisasi anggaran triwulan 3 tahun 2026\" cukup \"laporan realisasi anggaran triwulan\").\n\nDaftar Fungsi/Urusan:\n{daftar}\n\nTeks naskah:\n{text}\n\nKeluarkan HANYA JSON valid: {{\"fungsi\":\"NAMA PERSIS DARI DAFTAR\",\"perihal\":\"perihal singkat\"}}",
         daftar = daftar, text = &text.chars().take(3000).collect::<String>()
     );
     let body = serde_json::json!({
