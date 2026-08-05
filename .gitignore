@@ -6,3 +6,5 @@ node_modules/
 .env-key
 .env.tmp
 .codewhaleignore
+
+.codewhale/
