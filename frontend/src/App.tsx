@@ -54,6 +54,7 @@ function App() {
   const [extracting, setExtracting] = useState(false)
   const [apiAvailable, setApiAvailable] = useState<boolean | null>(null)
   const [cooldown, setCooldown] = useState<number | null>(null)
+  const [userApiKey, setUserApiKey] = useState(() => localStorage.getItem("gemini_api_key") || "")
   const chatEndRef = useRef<HTMLDivElement>(null)
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -186,7 +187,7 @@ function App() {
       const resp = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMsg.content })
+        body: JSON.stringify({ message: userMsg.content, api_key: userApiKey.trim() || undefined })
       })
 
       if (resp.status === 429) {
@@ -243,6 +244,17 @@ function App() {
           <span className="text-xs text-gray-500">AI Arsiparis — Pencarian Semantic</span>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <input
+            type="password"
+            value={userApiKey}
+            onChange={(e) => {
+              setUserApiKey(e.target.value)
+              localStorage.setItem("gemini_api_key", e.target.value)
+            }}
+            placeholder="API Key kamu (opsional)"
+            title="API Key Gemini milikmu — diprioritaskan di atas key server"
+            className="text-xs bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-300 placeholder-gray-600 w-44 focus:outline-none focus:border-violet-500"
+          />
           {cooldown !== null && (
             <span className="text-xs px-2.5 py-1 rounded-full bg-amber-950 border border-amber-800 text-amber-400">
               ⏳ {cooldown}s

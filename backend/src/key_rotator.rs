@@ -18,6 +18,37 @@ impl KeyRotator {
         }
     }
 
+    /// Coba key milik pengguna dulu (jika diberikan), lalu fallback ke key server.
+    /// Key pengguna di-prioritaskan dan kegagalannya TIDAK memicu cooldown global server.
+    pub async fn try_all_prefer<F, T>(
+        &self,
+        preferred: Option<&str>,
+        mut op: impl FnMut(String) -> F,
+    ) -> anyhow::Result<(T, String)>
+    where
+        F: std::future::Future<Output = anyhow::Result<T>>,
+    {
+        if let Some(pk) = preferred {
+            let trimmed = pk.trim();
+            if !trimmed.is_empty() {
+                match op(trimmed.to_string()).await {
+                    Ok(v) => {
+                        eprintln!("✅ Berhasil di Key pengguna (prioritas)");
+                        return Ok((v, trimmed.to_string()));
+                    }
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        eprintln!(
+                            "⚠️ Key pengguna gagal, fallback ke key server: {}",
+                            err_str.chars().take(100).collect::<String>()
+                        );
+                    }
+                }
+            }
+        }
+        self.try_all(op).await
+    }
+
     /// Coba semua key sekali saja. Jika SEMUA 429 → cooldown global 60s.
     pub async fn try_all<F, T>(
         &self,

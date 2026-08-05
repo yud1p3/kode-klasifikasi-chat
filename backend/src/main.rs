@@ -19,6 +19,9 @@ const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(10);
 #[derive(Debug, Deserialize)]
 struct ChatRequest {
     message: String,
+    /// API Key Gemini milik pengguna (opsional). Jika diisi, diprioritaskan di atas key server.
+    #[serde(default)]
+    api_key: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -94,7 +97,7 @@ async fn chat(
             Ok(rows) => rows.join(", "),
             Err(e) => { eprintln!("gagal baca fungsi DB: {e}"); String::new() }
         };
-        match state.key_rotator.try_all(|key| {
+        match state.key_rotator.try_all_prefer(body.api_key.as_deref(), |key| {
             let msg = message.to_string();
             let df = daftar_fungsi.clone();
             async move { gemini::select_fungsi(&key, &msg, &df).await }
@@ -108,7 +111,7 @@ async fn chat(
         }
     }
 
-    let embedding = match state.key_rotator.try_all(|key| {
+    let embedding = match state.key_rotator.try_all_prefer(body.api_key.as_deref(), |key| {
         let msg = embed_query.clone();
         async move { gemini::embed_text(&key, &msg).await }
     }).await {
@@ -140,7 +143,7 @@ async fn chat(
         }
     };
 
-    let (reranked, explanation, perihal) = match state.key_rotator.try_all(|key| {
+    let (reranked, explanation, perihal) = match state.key_rotator.try_all_prefer(body.api_key.as_deref(), |key| {
         let msg = message.to_string();
         let res = results.clone();
         async move { gemini::rerank_and_explain(&key, &msg, &res).await }
