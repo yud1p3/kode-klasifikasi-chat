@@ -4,41 +4,17 @@ use serde_json::Value;
 const EMBED_MODEL: &str = "gemini-embedding-2";
 const CHAT_MODEL: &str = "gemini-flash-lite-latest";
 
-/// Wrapper untuk HTTP POST ke Gemini dengan exponential-backoff retry.
-/// Max 3 percobaan (delay: 500ms, 1500ms, 4000ms).
-/// Return `(Response, bool)` di mana bool=true bila kena 429.
-/// Tidak membaca body di sini — caller yang baca body untuk parsing/error.
-/// Hindari bug: `resp.text()` consume resp, lalu resp dipakai lagi setelahnya.
-async fn post_with_retry(
-    client: &reqwest::Client,
-    url: &str,
-    body: &serde_json::Value,
-) -> anyhow::Result<(reqwest::Response, bool)> {
-    let delays_ms = [500u64, 1500, 4000];
-    let mut last_error = None;
-
-    for (i, &delay_ms) in delays_ms.iter().enumerate() {
-        if i > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-        }
-        match client.post(url).json(body).send().await {
-            Ok(resp) => {
-                // Cegah rate limit berulang via retry eksponensial
-                if resp.status() == 429 {
-                    eprintln!("⚡ 429 attempt #{}/3, retrying...", i + 1);
-                    last_error = Some(anyhow::anyhow!("RATE_LIMIT"));
-                    continue;
-                }
-                // Semua status lain langsung dikembalikan ke caller
-                // (caller sendiri akan baca .text() / .json() dari resp)
-                return Ok((resp, false));
-            }
-            Err(e) => {
-                last_error = Some(e.into());
-            }
-        }
+/// POST ke Gemini tanpa retry lokal.
+/// Jika kena 429, langsung return error agar caller (try_all) bisa switch key dengan cepat.
+/// Retry dan rotasi ditangani sepenuhnya oleh KeyRotator::try_all().
+async fn post(client: &reqwest::Client, url: &str, body: &serde_json::Value) -> anyhow::Result<reqwest::Response> {
+    let resp = client.post(url).json(body).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Gemini {} ({}): {}", status.as_str(), status, body.chars().take(500).collect::<String>());
     }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Semua percobaan gagal.")))
+    Ok(resp)
 }
 
 pub async fn embed_text(api_key: &str, text: &str) -> anyhow::Result<Vec<f64>> {
@@ -52,16 +28,21 @@ pub async fn embed_text(api_key: &str, text: &str) -> anyhow::Result<Vec<f64>> {
         "outputDimensionality": 768
     });
 
-    let (resp, _) = post_with_retry(&client, &url, &body).await?;
-    if !resp.status().is_success() {
-        let err_body = resp.text().await?;
-        anyhow::bail!("Gemini embed API error: {}", err_body);
-    }
+    let resp = post(&client, &url, &body).await?;
     let json: Value = resp.json().await?;
     let values = json["embedding"]["values"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Missing embedding.values"))?;
     Ok(values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect())
+}
+
+/// Ambil kode + deskripsi kandidat terbaik pertama (untuk fallback explanation).
+fn reranked_first_kode(results: &[super::ClassificationResult]) -> (String, String) {
+    if let Some(r) = results.first() {
+        (r.kode.clone(), r.deskripsi.clone())
+    } else {
+        (String::new(), String::new())
+    }
 }
 
 pub async fn rerank_and_explain(
@@ -104,10 +85,11 @@ pub async fn rerank_and_explain(
             kode B (misal A=041.03 dan B=041.03.01), maka B HARUS di atas A.\n\
             Contoh benar: 041.03.01.01 > 041.03.01 > 041.03\n\
          3. SIMILARITY SCORE - tiebreaker terakhir.\n\
-         LANGKAH 3 - JELASKAN: Beri penjelasan 2-3 kalimat kenapa peringkat 1 terbaik.\n\
-         Penjelasan HARUS fokus pada kecocokan isi naskah dengan kode/deskripsi terpilih.\n\
-         JANGAN menyebut aturan \"spesifisitas path\", \"prefix\", atau aturan teknis\n\
-         pengurutan. Gunakan bahasa yang mudah dimengerti pengelola arsip.\n\n\
+         LANGKAH 3 - JELASKAN: Tulis penjelasan dengan format PERSIS satu kalimat:\n\
+         \"Perihal: <perihal>. Kode klasifikasi <kode terpilih> dipilih dengan alasan <alasan>.\"\n\
+         <alasan> = 2-3 kalimat fokus kecocokan isi naskah dengan kode/deskripsi terpilih,\n\
+         dalam bahasa yang mudah dimengerti pengelola arsip.\n\
+         JANGAN menyebut aturan \"spesifisitas path\", \"prefix\", atau aturan teknis pengurutan.\n\n\
          Keluarkan HANYA JSON valid (tanpa markdown code block):\n\
          {{\"perihal\":\"...\",\"reranked\":[{{\"rank\":1,\"kode\":\"XXX.XX\"}}],\"explanation\":\"...\"}}",
         message, candidates
@@ -118,12 +100,7 @@ pub async fn rerank_and_explain(
         "generationConfig": { "temperature": 0.1, "maxOutputTokens": 1024 }
     });
 
-    let (resp, _) = post_with_retry(&client, &url, &body).await?;
-    if !resp.status().is_success() {
-        let err_body = resp.text().await?.trim().to_string();
-        anyhow::bail!("Gemini API error: {}", err_body);
-    }
-
+    let resp = post(&client, &url, &body).await?;
     let json: Value = resp.json().await?;
     let raw_text = json["candidates"][0]["content"]["parts"][0]["text"]
         .as_str()
@@ -138,15 +115,30 @@ pub async fn rerank_and_explain(
 
     let parsed: Value = serde_json::from_str(cleaned).unwrap_or(Value::Null);
 
+    // Debug: log raw Gemini response saat parse gagal/missing field,
+    // supaya flaky-ness Gemini bisa terlihat di log (stderr).
+    if parsed["perihal"].is_null() || parsed["explanation"].is_null() {
+        eprintln!("[rerank] JSON tidak lengkap. Raw ({} chars): {}", cleaned.chars().count(), cleaned.chars().take(800).collect::<String>());
+    }
+
     let perihal = parsed["perihal"]
         .as_str()
         .unwrap_or("")
         .to_string();
 
+    // Fallback informatif: kalau Gemini tidak memberi explanation,
+    // bangun dari kode terbaik + deskripsi supaya jawaban tetap berguna.
     let explanation = parsed["explanation"]
         .as_str()
-        .unwrap_or("Kode terbaik dipilih berdasarkan kecocokan dengan isi naskah.")
-        .to_string();
+        .map(str::to_string)
+        .or_else(|| {
+            let (kode, deskripsi) = reranked_first_kode(results);
+            Some(format!(
+                "Kode klasifikasi {} ({}) dipilih karena deskripsinya paling sesuai dengan isi naskah.",
+                kode, deskripsi
+            ))
+        })
+        .unwrap_or_else(|| "Kode terbaik dipilih berdasarkan kecocokan dengan isi naskah.".to_string());
 
     let mut rank_map: HashMap<String, usize> = HashMap::new();
     if let Some(arr) = parsed["reranked"].as_array() {
@@ -160,8 +152,7 @@ pub async fn rerank_and_explain(
     let mut reranked = results.to_vec();
     reranked.sort_by_key(|r| rank_map.get(&r.kode).copied().unwrap_or(usize::MAX));
 
-    // Sort insertion: pastikan kode lebih spesifik selalu di atas kode parent-nya
-    // (e.g., 041.03.01 harus di atas 041.03)
+    // Insertion sort: pastikan kode lebih spesifik selalu di atas kode parent-nya
     let mut changed = true;
     while changed {
         changed = false;

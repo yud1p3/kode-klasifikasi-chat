@@ -113,7 +113,7 @@ async fn chat(
         }
     };
 
-    let (reranked, perihal, explanation) = match state.key_rotator.try_all(|key| {
+    let (reranked, explanation, perihal) = match state.key_rotator.try_all(|key| {
         let msg = message.to_string();
         let res = results.clone();
         async move { gemini::rerank_and_explain(&key, &msg, &res).await }

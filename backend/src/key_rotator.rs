@@ -1,51 +1,24 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-/// Rotator untuk multi-Gemini-API-Key.
-/// - Coba semua key secara round-robin (sequential dari index 0).
-/// - Cooldown pendek (10s) karena Google token bucket reset cepat (~1 menit).
+/// Rotator multi-key untuk Gemini API.
+/// Semua key berbagi satu project quota → saat semua rate-limited,
+/// set cooldown global 60s (periode reset quota Google AI Studio free tier).
+/// TIDAK ada local retry — langsung switch key agar cepat masuk cooldown.
 pub struct KeyRotator {
     keys: Vec<String>,
-    cooldowns: Arc<Vec<std::sync::Mutex<Option<std::time::Instant>>>>,
+    global_cooldown: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 impl KeyRotator {
     pub fn new(keys: Vec<String>) -> Self {
-        let len = keys.len();
         Self {
             keys,
-            cooldowns: Arc::new((0..len).map(|_| std::sync::Mutex::new(None)).collect()),
+            global_cooldown: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
-    /// Tandai key masuk cooldown setelah kena 429/RESOURCE_EXHAUSTED.
-    pub fn mark_cooldown(&self, key: &str, duration: std::time::Duration) {
-        for (i, k) in self.keys.iter().enumerate() {
-            if k == key {
-                let mut cd = self.cooldowns[i].lock().unwrap();
-                *cd = Some(std::time::Instant::now() + duration);
-                break;
-            }
-        }
-    }
-
-    /// Cek apakah semua key sedang cooldown.
-    #[allow(dead_code)]
-    pub fn all_cooldowned(&self) -> bool {
-        let now = std::time::Instant::now();
-        for i in 0..self.keys.len() {
-            let cd = self.cooldowns[i].lock().unwrap();
-            if let Some(until) = *cd {
-                if now < until { continue; }
-            }
-            return false;
-        }
-        true
-    }
-
-    /// Coba semua key berturut-turut dengan auto-switch pada 429.
-    /// Tiap key mendapat 1x kesempatan (tanpa retry lokal berulang)
-    /// karena kita punya banyak key — lebih efisien coba key baru daripada
-    /// retry berkali-kali di key yang sama yang sedang rate-limited.
+    /// Coba semua key sekali saja. Jika SEMUA 429 → cooldown global 60s.
     pub async fn try_all<F, T>(
         &self,
         mut op: impl FnMut(String) -> F,
@@ -57,49 +30,74 @@ impl KeyRotator {
         if len == 0 {
             return Err(anyhow::anyhow!("Tidak ada Gemini API key configured"));
         }
-        if len == 1 {
-            let result = op(self.keys[0].clone()).await;
-            return result.map(|v| (v, self.keys[0].clone()));
+
+        // Cek cooldown global
+        {
+            let cd = self.global_cooldown.lock().unwrap();
+            if let Some(until) = *cd {
+                if Instant::now() < until {
+                    let secs = (until - Instant::now()).as_secs() + 1;
+                    return Err(anyhow::anyhow!(
+                        "Cooldown aktif ({:.0}s). Tunggu {:.0} menit.",
+                        secs as f64 / 60.0,
+                        secs as f64 / 60.0
+                    ));
+                }
+            }
         }
 
-        // Iterasi semua key mulai dari index 0
-        let candidates: Vec<(usize, String)> = (0..len)
-            .map(|i| (i, self.keys[i].clone()))
-            .collect();
+        // Reset cooldown jika sebelumnya aktif
+        {
+            let mut cd = self.global_cooldown.lock().unwrap();
+            *cd = None;
+        }
 
+        let mut last_429_idx = None;
         let mut last_err_msg = String::new();
 
-        for (_attempt, (key_idx, key)) in candidates.iter().enumerate() {
+        for (idx, key) in self.keys.iter().enumerate() {
             match op(key.clone()).await {
-                Ok(v) => return Ok((v, key.clone())),
+                Ok(v) => {
+                    eprintln!("✅ Berhasil di Key {} ({:.20}...)", idx, key);
+                    return Ok((v, key.clone()));
+                }
                 Err(ref e) => {
                     let err_str = e.to_string();
                     if err_str.contains("429") || err_str.contains("RESOURCE_EXHAUSTED") {
-                        // Cooldown pendek: cukup tunggu refresh token bucket (~10 detik)
-                        self.mark_cooldown(
-                            key,
-                            std::time::Duration::from_secs(10),
-                        );
-                        let next = if key_idx + 1 < len { key_idx + 1 } else { 0 };
-                        eprintln!(
-                            "🔑 Key {} ({:.20}...) rate limit → switch ke Key {}",
-                            key_idx, key, next
-                        );
+                        last_429_idx = Some(idx);
+                        eprintln!("🔑 Key {} rate-limit", idx);
                     } else {
-                        eprintln!(
-                            "⚠️ Key {} ({:.20}...) error lain: {}",
-                            key_idx, key, err_str
-                        );
+                        eprintln!("⚠️ Key {} error: {}", idx, err_str.chars().take(100).collect::<String>());
                     }
                     last_err_msg = err_str;
                 }
             }
         }
 
+        // Semua key kena 429 → cooldown 60 detik (reset period Google)
+        if last_429_idx.is_some() {
+            let mut cd = self.global_cooldown.lock().unwrap();
+            *cd = Some(Instant::now() + Duration::from_secs(60));
+            eprintln!(
+                "⏳ ALL KEY RATE-LIMITED → cooldown 60s (quota Google AI Studio reset)"
+            );
+        }
+
         Err(anyhow::anyhow!(
-            "Semua {} key gagal. Terakhir: {}",
-            len,
-            last_err_msg
+            "{}",
+            if last_429_idx.is_some() {
+                format!(
+                    "Semua {} key habis quota. Tunggu ~60 detik lalu coba lagi. Error terakhir: {}",
+                    len,
+                    last_err_msg.chars().take(200).collect::<String>()
+                )
+            } else {
+                format!(
+                    "Semua {} key gagal. Error: {}",
+                    len,
+                    last_err_msg.chars().take(200).collect::<String>()
+                )
+            }
         ))
     }
 }
