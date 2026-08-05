@@ -1,4 +1,5 @@
 use actix_cors::Cors;
+use actix_multipart::Multipart;
 use actix_web::{web, App, HttpResponse, HttpServer, middleware};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
@@ -133,6 +134,54 @@ async fn chat(
     HttpResponse::Ok().json(ChatResponse { results: reranked, perihal, explanation })
 }
 
+
+/// Ekstrak teks PDF via poppler (pdftotext).
+/// Dipakai sebagai fallback untuk PDF SRIKANDI yang ToUnicode-nya rusak
+/// (pdf.js menghasilkan karakter garbled, poppler membaca benar).
+async fn extract_pdf(mut payload: Multipart) -> HttpResponse {
+    use actix_web::web::BytesMut;
+    use futures::StreamExt;
+
+    // Simpan file multipart ke temp
+    let tmp_path = std::env::temp_dir().join(format!("kkl_upload_{}.pdf", std::process::id()));
+    let mut buf = BytesMut::new();
+    while let Some(Ok(mut field)) = payload.next().await {
+        while let Some(Ok(chunk)) = field.next().await {
+            buf.extend_from_slice(&chunk);
+        }
+    }
+    if buf.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "File kosong"}));
+    }
+    if let Err(e) = std::fs::write(&tmp_path, &buf) {
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("Gagal simpan file: {e}")}));
+    }
+
+    // Jalankan pdftotext
+    let out = std::process::Command::new("pdftotext")
+        .args([tmp_path.to_str().unwrap(), "-"])
+        .output();
+
+    let _ = std::fs::remove_file(&tmp_path);
+
+    match out {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if text.is_empty() {
+                HttpResponse::BadRequest().json(serde_json::json!({"error": "Tidak ada teks yang bisa diekstrak dari PDF"}))
+            } else {
+                HttpResponse::Ok().json(serde_json::json!({"text": text}))
+            }
+        }
+        Ok(o) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("pdftotext gagal: {}", String::from_utf8_lossy(&o.stderr).chars().take(300).collect::<String>())
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("pdftotext tidak tersedia: {e}. Install poppler-utils atau gunakan fallback pdf.js.")
+        })),
+    }
+}
+
 async fn health() -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({"status": "ok"}))
 }
@@ -198,6 +247,7 @@ async fn main() -> anyhow::Result<()> {
             .app_data(state.clone())
             .route("/api/health", web::get().to(health))
             .route("/api/chat", web::post().to(chat))
+            .route("/api/extract-pdf", web::post().to(extract_pdf))
     })
     .bind((host.as_str(), port))?
     .run()

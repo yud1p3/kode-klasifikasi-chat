@@ -13,6 +13,8 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
 dotenv = "0.15"
 reqwest = { version = "0.12", features = ["json"] }
 anyhow = "1"
+actix-multipart = "0.8.0"
+futures = "0.3.33"
 
 [profile.release]
 opt-level = 2

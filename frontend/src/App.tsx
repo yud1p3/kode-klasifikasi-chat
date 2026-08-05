@@ -101,18 +101,34 @@ function App() {
       const ext = file.name.split('.').pop()?.toLowerCase()
 
       if (ext === 'pdf') {
-        const arrayBuffer = await file.arrayBuffer()
-        const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
-        const pages: string[] = []
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i)
-          const content = await page.getTextContent()
-          const pageText = content.items
-            .map((item: any) => 'str' in item ? item.str : '')
-            .join(' ')
-          pages.push(pageText)
+        // Prioritaskan ekstraksi via backend (poppler): benar untuk PDF SRIKANDI
+        // yang ToUnicode-nya rusak (pdf.js menghasilkan karakter garbled).
+        const fd = new FormData()
+        fd.append('file', file)
+        try {
+          const r = await fetch(`${API_BASE}/api/extract-pdf`, { method: 'POST', body: fd })
+          if (r.ok) {
+            const j = await r.json()
+            if (j.text && j.text.trim().length > 0) {
+              text = j.text
+            }
+          }
+        } catch { /* backend tak terjangkau — lanjut fallback pdf.js */ }
+
+        if (!text) {
+          const arrayBuffer = await file.arrayBuffer()
+          const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
+          const pages: string[] = []
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i)
+            const content = await page.getTextContent()
+            const pageText = content.items
+              .map((item: any) => 'str' in item ? item.str : '')
+              .join(' ')
+            pages.push(pageText)
+          }
+          text = pages.join('\n')
         }
-        text = pages.join('\n')
       } else if (ext === 'docx') {
         const arrayBuffer = await file.arrayBuffer()
         const result = await mammoth.extractRawText({ arrayBuffer })
