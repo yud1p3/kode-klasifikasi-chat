@@ -438,8 +438,8 @@ function App() {
           </div>
         </form>
 
-        <p className="text-xs text-gray-600 mt-2 text-center">
-          Upload file PDF atau DOCX untuk analisa otomatis. Naskah pemerintah Indonesia direkomendasikan.
+        <p className="mt-2 text-center text-xs font-semibold text-red-400">
+          ⚠️ JANGAN UPLOAD NASKAH BERSIFAT RAHASIA ATAU BERISI INFORMASI SENSITIF
         </p>
       </footer>
     </div>

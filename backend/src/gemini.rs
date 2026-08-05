@@ -37,6 +37,39 @@ pub async fn embed_text(api_key: &str, text: &str) -> anyhow::Result<Vec<f64>> {
 }
 
 /// Ambil kode + deskripsi kandidat terbaik pertama (untuk fallback explanation).
+/// Ekstrak field dari raw JSON yang korup via pencarian substring manual
+/// (tahan karakter aneh/terpotong, tanpa dependency regex).
+fn extract_fields_tolerant(raw: &str) -> (String, String, Vec<String>) {
+    fn grab(raw: &str, key: &str) -> String {
+        let needle = format!("\"{}\"", key);
+        if let Some(rest) = raw.split_once(&needle).map(|(_, r)| r) {
+            if let Some(start) = rest.find('"') {
+                let after = &rest[start + 1..];
+                if let Some(end) = after.find('"') {
+                    return after[..end].to_string();
+                }
+            }
+        }
+        String::new()
+    }
+    // Ambil semua nilai "kode":"..." secara berurutan
+    let mut kodes: Vec<String> = Vec::new();
+    let needle = "\"kode\"";
+    let mut rest = raw;
+    while let Some((_, after)) = rest.split_once(needle) {
+        if let Some(start) = after.find('"') {
+            let body = &after[start + 1..];
+            if let Some(end) = body.find('"') {
+                kodes.push(body[..end].to_string());
+                rest = &body[end + 1..];
+                continue;
+            }
+        }
+        break;
+    }
+    (grab(raw, "perihal"), grab(raw, "explanation"), kodes)
+}
+
 fn reranked_first_kode(results: &[super::ClassificationResult]) -> (String, String) {
     if let Some(r) = results.first() {
         (r.kode.clone(), r.deskripsi.clone())
@@ -97,7 +130,7 @@ pub async fn rerank_and_explain(
 
     let body = serde_json::json!({
         "contents": [{ "parts": [{"text": prompt}] }],
-        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 1024 }
+        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 2048 }
     });
 
     let resp = post(&client, &url, &body).await?;
@@ -113,32 +146,20 @@ pub async fn rerank_and_explain(
         .trim_end_matches("```")
         .trim();
 
+    // Parsing toleran: serde gagal total bila JSON korup (karakter aneh / terpotong).
+    // Fallback ke ekstraksi regex per-field supaya perihal/reranked/explanation
+    // tetap terbaca meski satu bagian rusak.
     let parsed: Value = serde_json::from_str(cleaned).unwrap_or(Value::Null);
 
-    // Debug: log raw Gemini response saat parse gagal/missing field,
-    // supaya flaky-ness Gemini bisa terlihat di log (stderr).
-    if parsed["perihal"].is_null() || parsed["explanation"].is_null() {
-        eprintln!("[rerank] JSON tidak lengkap. Raw ({} chars): {}", cleaned.chars().count(), cleaned.chars().take(800).collect::<String>());
-    }
-
-    let perihal = parsed["perihal"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-
-    // Fallback informatif: kalau Gemini tidak memberi explanation,
-    // bangun dari kode terbaik + deskripsi supaya jawaban tetap berguna.
-    let explanation = parsed["explanation"]
+    let mut perihal = parsed["perihal"]
         .as_str()
         .map(str::to_string)
-        .or_else(|| {
-            let (kode, deskripsi) = reranked_first_kode(results);
-            Some(format!(
-                "Kode klasifikasi {} ({}) dipilih karena deskripsinya paling sesuai dengan isi naskah.",
-                kode, deskripsi
-            ))
-        })
-        .unwrap_or_else(|| "Kode terbaik dipilih berdasarkan kecocokan dengan isi naskah.".to_string());
+        .unwrap_or_default();
+
+    let mut explanation_raw = parsed["explanation"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_default();
 
     let mut rank_map: HashMap<String, usize> = HashMap::new();
     if let Some(arr) = parsed["reranked"].as_array() {
@@ -148,6 +169,32 @@ pub async fn rerank_and_explain(
             }
         }
     }
+
+    // Bila JSON korup, ekstrak manual via regex (tahan terhadap karakter aneh).
+    if perihal.is_empty() || explanation_raw.is_empty() || rank_map.is_empty() {
+        eprintln!("[rerank] JSON tidak lengkap ({} chars). Raw: {}", cleaned.chars().count(), cleaned.chars().take(800).collect::<String>());
+        let (p, e, kodes) = extract_fields_tolerant(cleaned);
+        if perihal.is_empty() { perihal = p; }
+        if explanation_raw.is_empty() { explanation_raw = e; }
+        if rank_map.is_empty() {
+            for (i, k) in kodes.into_iter().enumerate() {
+                rank_map.entry(k).or_insert(i);
+            }
+        }
+    }
+
+    // Fallback: explanation selalu ikut pola kesepakatan
+    // "Perihal: X. Kode klasifikasi Y dipilih dengan alasan Z."
+    let explanation = if !explanation_raw.is_empty() {
+        explanation_raw
+    } else {
+        let (kode, deskripsi) = reranked_first_kode(results);
+        let p = if perihal.is_empty() { "Naskah".to_string() } else { perihal.clone() };
+        format!(
+            "Perihal: {}. Kode klasifikasi {} ({}) dipilih dengan alasan deskripsinya paling sesuai dengan isi naskah.",
+            p, kode, deskripsi
+        )
+    };
 
     let mut reranked = results.to_vec();
     reranked.sort_by_key(|r| rank_map.get(&r.kode).copied().unwrap_or(usize::MAX));
