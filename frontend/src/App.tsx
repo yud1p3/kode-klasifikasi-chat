@@ -178,6 +178,7 @@ function App() {
     e.preventDefault()
     if (!input.trim() || loading || cooldown !== null) return
 
+    const startTime = performance.now()
     const userMsg: Message = { role: 'user', content: input }
     setMessages(prev => [...prev, userMsg])
     setInput('')
@@ -204,9 +205,10 @@ function App() {
       }
 
       const data: ChatResponse = await resp.json()
+      const elapsed = Math.round((performance.now() - startTime) / 1000)
       const assistantMsg: Message = {
         role: 'assistant',
-        content: data.explanation,
+        content: `${data.explanation}\n\n⏱️ Diproses dalam ${elapsed} detik`,
         results: data.results?.slice(0, 3)
       }
       setMessages(prev => [...prev, assistantMsg])
