@@ -51,7 +51,7 @@ pub async fn select_fungsi(api_key: &str, text: &str, daftar_fungsi: &str) -> an
     );
     let body = serde_json::json!({
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 8192 }
+        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 8192, "thinkingConfig": { "thinkingBudget": 0 } }
     });
     let resp = post(&client, &url, &body).await?;
     let json: Value = resp.json().await?;
@@ -172,7 +172,7 @@ pub async fn rerank_and_explain(
 
     let body = serde_json::json!({
         "contents": [{ "parts": [{"text": prompt}] }],
-        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 8192 }
+        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 8192, "thinkingConfig": { "thinkingBudget": 0 } }
     });
 
     let resp = post(&client, &url, &body).await?;
