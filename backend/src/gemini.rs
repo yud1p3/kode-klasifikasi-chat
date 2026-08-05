@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 const EMBED_MODEL: &str = "gemini-embedding-2";
-const CHAT_MODEL: &str = "gemini-flash-lite-latest";
+const CHAT_MODEL: &str = "gemini-2.5-flash";
 
 /// POST ke Gemini tanpa retry lokal.
 /// Jika kena 429, langsung return error agar caller (try_all) bisa switch key dengan cepat.
@@ -51,7 +51,7 @@ pub async fn select_fungsi(api_key: &str, text: &str, daftar_fungsi: &str) -> an
     );
     let body = serde_json::json!({
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 300 }
+        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 8192 }
     });
     let resp = post(&client, &url, &body).await?;
     let json: Value = resp.json().await?;
@@ -159,6 +159,7 @@ pub async fn rerank_and_explain(
             kode B (misal A=041.03 dan B=041.03.01), maka B HARUS di atas A.\n\
             Contoh benar: 041.03.01.01 > 041.03.01 > 041.03\n\
          3. SIMILARITY SCORE - tiebreaker terakhir.\n\
+         Tulis HANYA 3 kandidat terbaik di array reranked.\n\
          LANGKAH 3 - JELASKAN: Tulis penjelasan dengan format PERSIS satu kalimat:\n\
          \"Perihal: <perihal>. Kode klasifikasi <kode terpilih> dipilih dengan alasan <alasan>.\"\n\
          <alasan> = 2-3 kalimat fokus kecocokan isi naskah dengan kode/deskripsi terpilih,\n\
@@ -171,7 +172,7 @@ pub async fn rerank_and_explain(
 
     let body = serde_json::json!({
         "contents": [{ "parts": [{"text": prompt}] }],
-        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 2048 }
+        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 8192 }
     });
 
     let resp = post(&client, &url, &body).await?;

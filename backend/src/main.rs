@@ -154,8 +154,8 @@ async fn chat(
             eprintln!("Rerank error (all keys exhausted): {err_str}");
             (
                 results.clone(),
-                String::new(),
                 format!("\u{26a0}\u{fe0f} Gemini tidak dapat melakukan reranking: {}. Hasil diurutkan berdasarkan similarity semantic.", err_str),
+                String::new(),
             )
         }
     };
