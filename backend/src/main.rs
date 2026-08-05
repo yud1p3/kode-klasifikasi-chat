@@ -13,7 +13,7 @@ mod search;
 
 use key_rotator::KeyRotator;
 
-const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(30);
+const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Deserialize)]
 struct ChatRequest {

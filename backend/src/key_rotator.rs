@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 /// Rotator untuk multi-Gemini-API-Key.
-/// - Coba semua key berturut-turut secara round-robin.
-/// - Track cooldown per key (durasi setelah kena 429).
+/// - Coba semua key secara round-robin (sequential dari index 0).
+/// - Cooldown pendek (10s) karena Google token bucket reset cepat (~1 menit).
 pub struct KeyRotator {
     keys: Vec<String>,
     cooldowns: Arc<Vec<std::sync::Mutex<Option<std::time::Instant>>>>,
@@ -17,7 +17,7 @@ impl KeyRotator {
         }
     }
 
-    /// Tandai key tertentu masuk cooldown (setelah kena 429).
+    /// Tandai key masuk cooldown setelah kena 429/RESOURCE_EXHAUSTED.
     pub fn mark_cooldown(&self, key: &str, duration: std::time::Duration) {
         for (i, k) in self.keys.iter().enumerate() {
             if k == key {
@@ -35,16 +35,17 @@ impl KeyRotator {
         for i in 0..self.keys.len() {
             let cd = self.cooldowns[i].lock().unwrap();
             if let Some(until) = *cd {
-                if now < until {
-                    continue;
-                }
+                if now < until { continue; }
             }
-            return false; // ada yang non-cooldown
+            return false;
         }
         true
     }
 
-    /// Coba semua key berturut-turut. Switch ke key berikutnya bila kena 429/RESOURCE_EXHAUSTED.
+    /// Coba semua key berturut-turut dengan auto-switch pada 429.
+    /// Tiap key mendapat 1x kesempatan (tanpa retry lokal berulang)
+    /// karena kita punya banyak key — lebih efisien coba key baru daripada
+    /// retry berkali-kali di key yang sama yang sedang rate-limited.
     pub async fn try_all<F, T>(
         &self,
         mut op: impl FnMut(String) -> F,
@@ -61,27 +62,32 @@ impl KeyRotator {
             return result.map(|v| (v, self.keys[0].clone()));
         }
 
+        // Iterasi semua key mulai dari index 0
         let candidates: Vec<(usize, String)> = (0..len)
             .map(|i| (i, self.keys[i].clone()))
             .collect();
 
         let mut last_err_msg = String::new();
 
-        for (attempt, (key_idx, key)) in candidates.iter().enumerate() {
+        for (_attempt, (key_idx, key)) in candidates.iter().enumerate() {
             match op(key.clone()).await {
                 Ok(v) => return Ok((v, key.clone())),
                 Err(ref e) => {
                     let err_str = e.to_string();
                     if err_str.contains("429") || err_str.contains("RESOURCE_EXHAUSTED") {
-                        let cooldown_secs = if attempt == 0 { 30 } else { 60 };
-                        self.mark_cooldown(key, std::time::Duration::from_secs(cooldown_secs));
+                        // Cooldown pendek: cukup tunggu refresh token bucket (~10 detik)
+                        self.mark_cooldown(
+                            key,
+                            std::time::Duration::from_secs(10),
+                        );
+                        let next = if key_idx + 1 < len { key_idx + 1 } else { 0 };
                         eprintln!(
-                            "🔑 Key {} ({:.20}...) kena rate limit, switch ke key berikutnya...",
-                            key_idx, key
+                            "🔑 Key {} ({:.20}...) rate limit → switch ke Key {}",
+                            key_idx, key, next
                         );
                     } else {
                         eprintln!(
-                            "⚠️ Key {} ({:.20}...) error: {}",
+                            "⚠️ Key {} ({:.20}...) error lain: {}",
                             key_idx, key, err_str
                         );
                     }
