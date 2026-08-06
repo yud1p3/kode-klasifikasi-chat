@@ -36,9 +36,11 @@ pub async fn embed_text(api_key: &str, text: &str) -> anyhow::Result<Vec<f64>> {
     Ok(values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect())
 }
 
-/// Pilih fungsi/urusan (1 dari 45) + perihal dari naskah, utk menyusun query embedding.
-/// Kembalikan (fungsi, perihal).
-pub async fn select_fungsi(api_key: &str, text: &str, daftar_fungsi: &str) -> anyhow::Result<(String, String)> {
+/// Pilih fungsi/urusan (1 dari 45 klaster-1) + DUA varian perihal dari naskah.
+/// Kembalikan (fungsi, perihal_inti, perihal_lengkap):
+/// - perihal_inti: bersih (tanpa nama orang/tempat/waktu), huruf kecil → query embedding
+/// - perihal_lengkap: detail apa adanya → tampilan UI & feedback
+pub async fn select_fungsi(api_key: &str, text: &str, daftar_fungsi: &str) -> anyhow::Result<(String, String, String)> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
@@ -46,7 +48,12 @@ pub async fn select_fungsi(api_key: &str, text: &str, daftar_fungsi: &str) -> an
     );
     let daftar = daftar_fungsi;
     let prompt = format!(
-        "Anda arsiparis. Dari teks naskah dinas berikut, tentukan SATU Fungsi/Urusan yang paling sesuai dengan SUBSTANSI MASALAH naskah (bukan bentuk surat), dan Tuliskan perihal singkat naskah. BUANG keterangan nama orang dan periode waktu dari perihal (contoh: \"usulan kenaikan pangkat atas nama X\" cukup \"usulan kenaikan pangkat\"; \"laporan realisasi anggaran triwulan 3 tahun 2026\" cukup \"laporan realisasi anggaran triwulan\"; contoh wilayah: \"bimbingan teknis SRIKANDI di Kecamatan Kesamben\" cukup \"bimbingan teknis SRIKANDI pada Pemerintah Desa\").\n\nDaftar Fungsi/Urusan:\n{daftar}\n\nTeks naskah:\n{text}\n\nKeluarkan HANYA JSON valid: {{\"fungsi\":\"NAMA PERSIS DARI DAFTAR\",\"perihal\":\"perihal singkat\"}}",
+        "Anda arsiparis. Dari teks naskah dinas berikut, tentukan SATU Fungsi/Urusan yang paling sesuai dengan SUBSTANSI MASALAH naskah (bukan bentuk surat), lalu tuliskan DUA varian perihal:\n\n\
+         - perihal_lengkap: perihal naskah LENGKAP apa adanya (maks 1 kalimat, boleh memuat tanggal/tahun/nama/tempat sebagaimana tertulis di naskah).\n\
+         - perihal_inti: versi BERSIH dari perihal_lengkap, hanya substansi. WAJIB BUANG dari perihal_inti: 1) NAMA ORANG (contoh: \"usulan kenaikan pangkat atas nama Bambang\" cukup \"usulan kenaikan pangkat\"), 2) TEMPAT/WILAYAH/UNIT: kota, kabupaten, kecamatan, desa, instansi, alamat (contoh: \"bimbingan teknis SRIKANDI di Kecamatan Kesamben\" cukup \"bimbingan teknis SRIKANDI\"), 3) KETERANGAN WAKTU & NOMOR: tanggal, bulan, tahun, periode, nomor surat (contoh: \"laporan realisasi anggaran triwulan 2 tahun 2026\" cukup \"laporan realisasi anggaran triwulan\"). PERTAHANKAN istilah substantif seperti \"triwulan\", \"semester\", \"tahun anggaran\" bila menjadi sifat naskah; cukup hilangkan angka/penunjuk spesifiknya. Tulis perihal_inti dalam HURUF KECIL.\n\n\
+         Daftar Fungsi/Urusan:\n{daftar}\n\n\
+         Teks naskah:\n{text}\n\n\
+         Keluarkan HANYA JSON valid: {{\"fungsi\":\"NAMA PERSIS DARI DAFTAR\",\"perihal_inti\":\"perihal inti huruf kecil\",\"perihal_lengkap\":\"perihal lengkap apa adanya\"}}",
         daftar = daftar, text = &text.chars().take(3000).collect::<String>()
     );
     let body = serde_json::json!({
@@ -56,11 +63,14 @@ pub async fn select_fungsi(api_key: &str, text: &str, daftar_fungsi: &str) -> an
     let resp = post(&client, &url, &body).await?;
     let json: Value = resp.json().await?;
     let raw = json["candidates"][0]["content"]["parts"][0]["text"]
-        .as_str().unwrap_or("{\"fungsi\":\"\",\"perihal\":\"\"}")
+        .as_str().unwrap_or("{\"fungsi\":\"\",\"perihal_inti\":\"\",\"perihal_lengkap\":\"\"}")
         .trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
     let f = grab_field(raw, "fungsi");
-    let p = grab_field(raw, "perihal");
-    Ok((f, p))
+    let pi = grab_field(raw, "perihal_inti");
+    let pl = grab_field(raw, "perihal_lengkap");
+    // perihal_inti selalu lowercase & trim (hardening: instruksi prompt saja
+    // tidak cukup — model sesekali bisa mengembalikan kapital/whitespace).
+    Ok((f.trim().to_string(), pi.trim().to_lowercase(), pl.trim().to_string()))
 }
 
 /// Ambil kode + deskripsi kandidat terbaik pertama (untuk fallback explanation).
@@ -123,6 +133,7 @@ pub async fn rerank_and_explain(
     api_key: &str,
     message: &str,
     fewshot: &str,
+    perihal_hint: &str,
     results: &[super::ClassificationResult],
 ) -> anyhow::Result<(Vec<super::ClassificationResult>, String, String)> {
     if results.is_empty() {
@@ -150,6 +161,14 @@ pub async fn rerank_and_explain(
         format!("{}\n", fewshot)
     };
 
+    // Perihal lengkap dari select_fungsi — dipakai sebagai acuan perihal di
+    // LANGKAH 1 agar kalimat penjelasan konsisten dengan perihal tampilan.
+    let perihal_hint_section = if perihal_hint.trim().is_empty() {
+        String::new()
+    } else {
+        format!("===== PERIHAL NASKAH (hasil ekstraksi awal) =====\n{}\n\n", perihal_hint)
+    };
+
     let prompt = format!(
         "Kamu adalah AI Arsiparis. Di bawah ini adalah teks naskah dinas (bisa teks lengkap\n\
          dokumen, atau perihal singkat).\n\n\
@@ -158,9 +177,12 @@ pub async fn rerank_and_explain(
          ===== DAFTAR KANDIDAT =====\n\
          {}\n\n\
          {}\
+         {}\
          TUGAS KAMU (3 langkah berurutan):\n\n\
-         LANGKAH 1 - EKSTRAK PERIHAL: Baca teks naskah. Cari baris Perihal: / Hal:\n\
-         atau simpulkan dari isi dokumen. Hasilnya PERIHAL NASKAH (maks 1 kalimat).\n\
+         LANGKAH 1 - TETAPKAN PERIHAL: Pakai PERIHAL NASKAH dari bagian ===== PERIHAL\n\
+         NASKAH ===== di atas bila terisi (jangan ekstrak ulang). Bila kosong, cari baris\n\
+         Perihal: / Hal: atau simpulkan dari isi dokumen. Hasilnya PERIHAL NASKAH\n\
+         (maks 1 kalimat). Gunakan persis apa adanya, tanpa mengubah huruf besar/kecil.\n\
          Abaikan kop surat, kop dinas, alamat, salam pembuka.\n\
          LANGKAH 2 - RERANK KANDIDAT: Urutkan ulang semua kandidat berdasarkan:\n\
          1. RELEVANSI - kecocokan dengan PERIHAL NASKAH.\n\
@@ -176,7 +198,7 @@ pub async fn rerank_and_explain(
          JANGAN menyebut aturan \"spesifisitas path\", \"prefix\", atau aturan teknis pengurutan.\n\n\
          Keluarkan HANYA JSON valid (tanpa markdown code block):\n\
          {{\"perihal\":\"...\",\"reranked\":[{{\"rank\":1,\"kode\":\"XXX.XX\"}}],\"explanation\":\"...\"}}",
-        message, candidates, fewshot_section
+        message, candidates, fewshot_section, perihal_hint_section
     );
 
     let body = serde_json::json!({

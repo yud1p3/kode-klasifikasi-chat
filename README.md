@@ -9,7 +9,7 @@ Asisten AI berbasis **Rust + React + TypeScript** untuk mencari kode klasifikasi
 - **Pencarian Semantic** — Embedding 768 dimensi via Gemini `gemini-embedding-2` + pgvector cosine similarity
 - **Penjelasan AI** — Gemini memilih kode terbaik dari top-10 hasil, merangking ulang, dan menjelaskan alasannya
 - **Upload File PDF/DOCX** — Ekstrak teks langsung dari file: PDF via poppler (`pdftotext`) dengan fallback pdf.js, DOCX via mammoth
-- **Pemilihan Fungsi/Urusan** — Untuk naskah panjang (>300 karakter), Gemini memilih salah satu dari 45 Fungsi/Urusan induk (dibaca langsung dari database) + perihal, lalu query embedding disusun sebagai `"FUNGSI > perihal"` agar hasil pencarian lebih akurat
+- **Pemilihan Fungsi/Urusan** — Untuk setiap naskah (pendek maupun panjang), Gemini memilih salah satu dari Fungsi/Urusan induk (dibaca langsung dari database) + perihal inti yang dibersihkan dari nama orang, tempat/wilayah, dan keterangan waktu, lalu query embedding disusun sebagai `"FUNGSI > perihal"` agar hasil pencarian lebih akurat
 - **Multi-Key Rotasi** — Beberapa API key gratis dirotasi otomatis; saat satu key kena 429 rate limit, permintaan dialihkan ke key berikutnya
 - **Rate Limit Protection** — Cooldown timer di frontend + rate limiter di backend (10 detik per request)
 - **Peringatan Naskah Sensitif** — UI menampilkan peringatan agar tidak mengunggah naskah rahasia/berisi informasi sensitif
@@ -132,7 +132,7 @@ Response:
 }
 ```
 
-`perihal` berisi perihal yang diekstrak Gemini untuk naskah panjang (kosong jika input pendek).
+`perihal` berisi perihal naskah hasil ekstraksi Gemini (untuk ditampilkan di UI dan disimpan bersama feedback).
 
 ### POST `/api/extract-pdf`
 

@@ -64,18 +64,15 @@ struct AppState {
 }
 
 /// Susun teks untuk embedding yang KONSISTEN dengan query chat:
-/// - naskah pendek (≤300 char) → teks asli
-/// - naskah panjang (>300 char) → "FUNGSI > perihal" via Gemini select_fungsi
-///   (fallback ke teks asli bila gagal / rate limit).
-/// Dipakai baik di chat maupun saat menyimpan feedback, sehingga few-shot
-/// dari feedback dicocokkan dalam ruang embedding yang sama dengan query.
-/// Catatan: untuk naskah panjang, pemanggilan select_fungsi menghabiskan
-/// 1 kuota chat (dicatat otomatis saat sukses).
-async fn build_embed_query(state: &AppState, api_key: Option<&str>, message: &str) -> String {
-    if message.chars().count() <= 300 {
-        return message.to_string();
-    }
-    // Baca 45 Fungsi/Urusan induk langsung dari DB (distinct level-1 path)
+/// SELALU "FUNGSI > perihal_inti" via Gemini select_fungsi, baik naskah
+/// pendek maupun panjang. perihal_inti dibersihkan dari nama orang,
+/// tempat/wilayah, dan keterangan waktu — sesuai struktur path dataset yang
+/// tidak pernah memuat keterangan semacam itu. Dikembalikan juga
+/// perihal_lengkap (detail apa adanya) untuk ditampilkan di UI & feedback.
+/// Fallback ke teks asli bila gagal / rate limit.
+/// Catatan: setiap pemanggilan select_fungsi menghabiskan 1 kuota chat.
+async fn build_embed_query(state: &AppState, api_key: Option<&str>, message: &str) -> (String, String) {
+    // Baca Fungsi/Urusan induk langsung dari DB (distinct level-1 path)
     let daftar_fungsi: String = match sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT trim(deskripsi) FROM klasifikasi_embedding WHERE LENGTH(kode) = 3 ORDER BY 1"
     )
@@ -97,22 +94,37 @@ async fn build_embed_query(state: &AppState, api_key: Option<&str>, message: &st
         })
         .await
     {
-        Ok(((fungsi, perihal), _)) if !fungsi.is_empty() && !perihal.is_empty() => {
-            eprintln!("Fungsi terpilih: {fungsi} | Perihal: {perihal}");
+        Ok(((fungsi, perihal_inti, perihal_lengkap), _)) if !fungsi.is_empty() && !perihal_inti.is_empty() => {
+            eprintln!("Fungsi terpilih: {fungsi} | Perihal inti: {perihal_inti}");
             state.quota.record_chat(1);
-            format!("{} > {}", fungsi, perihal)
+            (format!("{} > {}", fungsi, perihal_inti), perihal_lengkap)
         }
-        Ok(_) => {
-            // Gemini tetap dipanggil (kuota terpakai) meski field kosong
+        Ok(((_fungsi, _perihal_inti, perihal_lengkap), _)) => {
+            // Gemini tetap dipanggil (kuota terpakai) meski field inti kosong
             state.quota.record_chat(1);
-            eprintln!("select_fungsi: field kosong, pakai teks asli");
-            message.to_string()
+            eprintln!("select_fungsi: field inti kosong, pakai teks asli");
+            (message.to_string(), perihal_lengkap)
         }
         Err(e) => {
             eprintln!("select_fungsi gagal, pakai teks asli: {e}");
-            message.to_string()
+            (message.to_string(), String::new())
         }
     }
+}
+
+/// Ganti prefix "Perihal: ..." pada kalimat penjelasan agar SELALU konsisten
+/// dengan perihal tampilan (perihal_lengkap), apa pun yang dikembalikan model.
+/// Bila pola tidak ditemukan, kembalikan penjelasan apa adanya.
+fn fix_explanation_perihal(explanation: &str, perihal: &str) -> String {
+    const PREFIX: &str = "Perihal: ";
+    if let Some(rest) = explanation.strip_prefix(PREFIX) {
+        if let Some(end) = rest.find(". Kode klasifikasi") {
+            // Buang tanda baca/whitespace di ujung perihal agar tidak dobel titik
+            let p = perihal.trim().trim_end_matches('.').trim_end();
+            return format!("{PREFIX}{}{}", p, &rest[end..]);
+        }
+    }
+    explanation.to_string()
 }
 
 async fn chat(
@@ -154,9 +166,9 @@ async fn chat(
 
     // Proaktif: cek kuota free (RPM/RPD) SEBELUM memanggil Gemini,
     // agar tidak sampai kena error 429 dari Google.
-    // Estimasi call: naskah pendek = 1 chat (rerank) + 1 embed;
-    // naskah panjang (>300) = 2 chat (select_fungsi + rerank) + 1 embed.
-    let chat_calls_estimate: u32 = if message.chars().count() > 300 { 2 } else { 1 };
+    // Estimasi call: selalu 2 chat (select_fungsi + rerank) + 1 embed,
+    // karena semua naskah (pendek & panjang) melewati select_fungsi.
+    let chat_calls_estimate: u32 = 2;
     if let Err((wait, why)) = state.quota.check(chat_calls_estimate, 1) {
         eprintln!("⏳ Kuota free block: {why}, tunggu {wait} detik");
         return HttpResponse::TooManyRequests().json(ErrorResponse {
@@ -169,7 +181,7 @@ async fn chat(
 
     // Susun teks query embedding — dipakai juga saat menyimpan feedback
     // (build_embed_query) agar few-shot dicocokkan dalam ruang embedding yang sama.
-    let embed_query = build_embed_query(&state, body.api_key.as_deref(), message).await;
+    let (embed_query, perihal_lengkap) = build_embed_query(&state, body.api_key.as_deref(), message).await;
 
     let embedding = match state.key_rotator.try_all_prefer(body.api_key.as_deref(), |key| {
         let msg = embed_query.clone();
@@ -237,11 +249,14 @@ async fn chat(
         }
     };
 
-    let (reranked, explanation, perihal) = match state.key_rotator.try_all_prefer(body.api_key.as_deref(), |key| {
+    let (reranked, explanation, perihal_rerank) = match state.key_rotator.try_all_prefer(body.api_key.as_deref(), |key| {
         let msg = message.to_string();
         let fs = fewshot_text.clone();
         let res = results.clone();
-        async move { gemini::rerank_and_explain(&key, &msg, &fs, &res).await }
+        // Perihal tampilan (perihal_lengkap) diteruskan agar penjelasan
+        // "Perihal: X" konsisten dengan yang ditampilkan di UI.
+        let ph = perihal_lengkap.clone();
+        async move { gemini::rerank_and_explain(&key, &msg, &fs, &ph, &res).await }
     }).await {
         Ok((result, _used_key)) => {
             state.quota.record_chat(1);
@@ -262,6 +277,19 @@ async fn chat(
                 String::new(),
             )
         }
+    };
+
+    // Perihal tampilan: pakai perihal_lengkap dari select_fungsi (panggilan
+    // Gemini awal, detail apa adanya); fallback ke perihal hasil rerank bila
+    // select_fungsi gagal/tidak mengembalikan perihal_lengkap.
+    let perihal = if !perihal_lengkap.is_empty() { perihal_lengkap } else { perihal_rerank };
+
+    // Hard guarantee: prefix "Perihal: X" di kalimat penjelasan selalu memakai
+    // perihal tampilan yang sama (tidak bergantung kepatuhan model).
+    let explanation = if !perihal.is_empty() {
+        fix_explanation_perihal(&explanation, &perihal)
+    } else {
+        explanation
     };
 
     HttpResponse::Ok().json(ChatResponse { results: reranked, perihal, explanation })
@@ -490,9 +518,9 @@ async fn submit_feedback(
         }
         *last = now;
     }
-    // Estimasi: koreksi = 1 chat (validasi) + 1 embed; naskah panjang tambah
-    // 1 chat (select_fungsi saat menyusun teks embedding).
-    let chat_calls_estimate: u32 = if msg.chars().count() > 300 { 2 } else { 1 };
+    // Estimasi: koreksi = 2 chat (select_fungsi saat menyusun teks embedding
+    // + validasi) + 1 embed, karena semua naskah melewati select_fungsi.
+    let chat_calls_estimate: u32 = 2;
     if let Err((wait, why)) = state.quota.check(chat_calls_estimate, 1) {
         eprintln!("⏳ Kuota block (feedback): {why}");
         return HttpResponse::TooManyRequests().json(ErrorResponse {
@@ -614,7 +642,7 @@ async fn submit_feedback(
     // dicocokkan dalam ruang embedding yang sama.
     let mut emb_store: Option<String> = None;
     if status == "validated" {
-        let embed_text = build_embed_query(&state, body.api_key.as_deref(), msg).await;
+        let (embed_text, _perihal_lengkap) = build_embed_query(&state, body.api_key.as_deref(), msg).await;
         if let Ok((emb, _)) = state
             .key_rotator
             .try_all_prefer(body.api_key.as_deref(), |key| {
