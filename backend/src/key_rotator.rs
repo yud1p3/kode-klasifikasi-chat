@@ -131,4 +131,18 @@ impl KeyRotator {
             }
         ))
     }
+
+    /// Sisa waktu cooldown global dalam detik (None bila tidak aktif).
+    /// Dipakai backend untuk menjawab 429 dengan retry_after yang akurat
+    /// (bukan 500) saat semua key sedang dalam cooldown.
+    pub fn cooldown_remaining_secs(&self) -> Option<u64> {
+        let cd = self.global_cooldown.lock().unwrap();
+        if let Some(until) = *cd {
+            let now = Instant::now();
+            if now < until {
+                return Some((until - now).as_secs() + 1);
+            }
+        }
+        None
+    }
 }

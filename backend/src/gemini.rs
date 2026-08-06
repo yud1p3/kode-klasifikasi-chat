@@ -122,6 +122,7 @@ fn reranked_first_kode(results: &[super::ClassificationResult]) -> (String, Stri
 pub async fn rerank_and_explain(
     api_key: &str,
     message: &str,
+    fewshot: &str,
     results: &[super::ClassificationResult],
 ) -> anyhow::Result<(Vec<super::ClassificationResult>, String, String)> {
     if results.is_empty() {
@@ -142,6 +143,13 @@ pub async fn rerank_and_explain(
         ));
     }
 
+    // Few-shot: koreksi arsiparis tervalidasi pada naskah serupa (jika ada)
+    let fewshot_section = if fewshot.trim().is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", fewshot)
+    };
+
     let prompt = format!(
         "Kamu adalah AI Arsiparis. Di bawah ini adalah teks naskah dinas (bisa teks lengkap\n\
          dokumen, atau perihal singkat).\n\n\
@@ -149,6 +157,7 @@ pub async fn rerank_and_explain(
          {}\n\n\
          ===== DAFTAR KANDIDAT =====\n\
          {}\n\n\
+         {}\
          TUGAS KAMU (3 langkah berurutan):\n\n\
          LANGKAH 1 - EKSTRAK PERIHAL: Baca teks naskah. Cari baris Perihal: / Hal:\n\
          atau simpulkan dari isi dokumen. Hasilnya PERIHAL NASKAH (maks 1 kalimat).\n\
@@ -167,7 +176,7 @@ pub async fn rerank_and_explain(
          JANGAN menyebut aturan \"spesifisitas path\", \"prefix\", atau aturan teknis pengurutan.\n\n\
          Keluarkan HANYA JSON valid (tanpa markdown code block):\n\
          {{\"perihal\":\"...\",\"reranked\":[{{\"rank\":1,\"kode\":\"XXX.XX\"}}],\"explanation\":\"...\"}}",
-        message, candidates
+        message, candidates, fewshot_section
     );
 
     let body = serde_json::json!({
