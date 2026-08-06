@@ -443,6 +443,12 @@ function App() {
           api_key: userApiKey.trim() || undefined
         })
       })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => null) as ErrorResponse | null
+        if (resp.status === 401) logout()
+        setFeedbackMap(prev => ({ ...prev, [msgIdx]: { type: 'positive', result: { valid: false, kode_terbaik: null, penjelasan: err?.error || `Gagal mengirim feedback (HTTP ${resp.status}).` } } }))
+        return
+      }
       const data: FeedbackResult = await resp.json()
       setFeedbackMap(prev => ({ ...prev, [msgIdx]: { type: 'positive', result: data } }))
     } catch {
@@ -489,6 +495,12 @@ function App() {
           candidates: msg.results.slice(0, 3).map(r => ({ kode: r.kode, deskripsi: r.deskripsi, path: r.path }))
         })
       })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => null) as ErrorResponse | null
+        if (resp.status === 401) logout()
+        setFeedbackMap(prev => ({ ...prev, [msgIdx]: { type: 'correction', result: { valid: false, kode_terbaik: null, penjelasan: err?.error || `Gagal mengirim koreksi (HTTP ${resp.status}).` } } }))
+        return
+      }
       const data: FeedbackResult = await resp.json()
       setFeedbackMap(prev => ({ ...prev, [msgIdx]: { type: 'correction', result: data } }))
       setCorrectionForm(prev => ({ ...prev, [msgIdx]: { ...(prev[msgIdx] || { kode: '', alasan: '' }), suggestions: [] } }))
@@ -630,6 +642,30 @@ function App() {
         }])
         startCooldown(wait)
         fetchQuota()
+        setLoading(false)
+        return
+      }
+
+      // Tangani status selain 200 (401 sesi berakhir, 400/500, dll).
+      // Tanpa ini, respons error {error: ...} di-parse sebagai ChatResponse
+      // dan field explanation yang tidak ada tampil sebagai "undefined".
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => null) as ErrorResponse | null
+        if (resp.status === 401) {
+          // Token kedaluwarsa/tidak valid → reset sesi agar muncul layar login
+          logout()
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: '🔐 Sesi login sudah berakhir. Silakan masuk ulang dengan akun Google.',
+            isRateLimit: false
+          }])
+        } else {
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: `❌ ${err?.error || `Terjadi kesalahan (HTTP ${resp.status})`}`,
+            isRateLimit: false
+          }])
+        }
         setLoading(false)
         return
       }
