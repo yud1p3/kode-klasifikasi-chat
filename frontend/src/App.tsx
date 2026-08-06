@@ -329,6 +329,17 @@ function App() {
   const [statsLoading, setStatsLoading] = useState(false)
   const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 
+  // Keluar: hapus sesi lokal. Didefinisikan lebih awal (useCallback stabil)
+  // agar bisa dipakai oleh fetchQuota/fetchStats saat token kedaluwarsa (401)
+  // tanpa merusak memoization interval polling.
+  const logout = useCallback(() => {
+    localStorage.removeItem('kk_token')
+    localStorage.removeItem('kk_user')
+    setToken('')
+    setUser(null)
+    setView('chat')
+  }, [])
+
   useEffect(() => {
     fetch(`${API_BASE}/api/health`)
       .then(r => r.json())
@@ -341,8 +352,9 @@ function App() {
     try {
       const r = await fetch(`${API_BASE}/api/quota`)
       if (r.ok) setQuota(await r.json())
+      else if (r.status === 401) logout() // defensif: sesi kedaluwarsa → layar login
     } catch { /* server offline */ }
-  }, [API_BASE])
+  }, [API_BASE, logout])
 
   useEffect(() => {
     fetchQuota()
@@ -397,9 +409,10 @@ function App() {
     try {
       const r = await fetch(`${API_BASE}/api/feedback/stats`, { headers: authHeaders(false) })
       if (r.ok) setStats(await r.json())
+      else if (r.status === 401) logout() // sesi kedaluwarsa → layar login
     } catch { /* server offline */ }
     setStatsLoading(false)
-  }, [API_BASE, token])
+  }, [API_BASE, token, logout])
 
   const login = async () => {
     if (!authConfig?.enabled) return
@@ -416,14 +429,6 @@ function App() {
     url.searchParams.set('code_challenge_method', 'S256')
     url.searchParams.set('state', state)
     window.location.href = url.toString()
-  }
-
-  const logout = () => {
-    localStorage.removeItem('kk_token')
-    localStorage.removeItem('kk_user')
-    setToken('')
-    setUser(null)
-    setView('chat')
   }
 
   // ---------- Feedback ----------
