@@ -638,8 +638,8 @@ async fn submit_feedback(
 
     // Embedding naskah (best-effort) — dipakai few-shot untuk query serupa.
     // Teks embedding DISELARASKAN dengan query chat (build_embed_query):
-    // pendek → teks asli, panjang → "FUNGSI > perihal", agar few-shot
-    // dicocokkan dalam ruang embedding yang sama.
+    // selalu "FUNGSI > perihal_inti", agar few-shot dicocokkan dalam ruang
+    // embedding yang sama dengan query.
     let mut emb_store: Option<String> = None;
     if status == "validated" {
         let (embed_text, _perihal_lengkap) = build_embed_query(&state, body.api_key.as_deref(), msg).await;

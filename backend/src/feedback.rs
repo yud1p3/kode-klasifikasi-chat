@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 
@@ -147,43 +147,74 @@ fn grab_field(raw: &str, key: &str) -> String {
     String::new()
 }
 
+/// Satu contoh koreksi tervalidasi untuk few-shot, lengkap dengan deskripsi &
+/// path kode awal & kode benar (dari dataset) agar Gemini punya konteks hirarki.
+pub struct FewShotExample {
+    pub teks: String,       // perihal (atau potongan naskah)
+    pub kode_ai: String,
+    pub kode_terbaik: String,
+    pub ai_deskripsi: String,
+    pub ai_path: String,
+    pub kb_deskripsi: String,
+    pub kb_path: String,
+}
+
 /// Ambil hingga 5 koreksi tervalidasi yang NASKAHNYA PALING MIRIP dengan embedding
 /// query saat ini (pgvector cosine). Dipakai sebagai few-shot di prompt rerank.
-pub async fn fetch_fewshot(db: &PgPool, embedding: &[f64]) -> Result<Vec<(String, String, String)>> {
+pub async fn fetch_fewshot(db: &PgPool, embedding: &[f64]) -> Result<Vec<FewShotExample>> {
     let emb_str = embedding
         .iter()
         .map(|v| v.to_string())
         .collect::<Vec<_>>()
         .join(",");
-    let rows = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT COALESCE(NULLIF(perihal,''), LEFT(naskah, 120)), kode_ai, kode_terbaik
-         FROM klasifikasi_feedback
-         WHERE status = 'validated' AND feedback_type = 'correction'
-           AND kode_terbaik IS NOT NULL AND kode_terbaik <> kode_ai
-           AND embedding IS NOT NULL
-         ORDER BY embedding <=> $1::vector
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
+        "SELECT COALESCE(NULLIF(f.perihal,''), LEFT(f.naskah, 120)),
+                f.kode_ai, f.kode_terbaik,
+                COALESCE(ai.deskripsi,''), COALESCE(ai.path,''),
+                COALESCE(kb.deskripsi,''), COALESCE(kb.path,'')
+         FROM klasifikasi_feedback f
+         LEFT JOIN klasifikasi_embedding ai ON ai.kode = f.kode_ai
+         LEFT JOIN klasifikasi_embedding kb ON kb.kode = f.kode_terbaik
+         WHERE f.status = 'validated' AND f.feedback_type = 'correction'
+           AND f.kode_terbaik IS NOT NULL AND f.kode_terbaik <> f.kode_ai
+           AND f.embedding IS NOT NULL
+         ORDER BY f.embedding <=> $1::vector
          LIMIT 5",
     )
     .bind(format!("[{}]", emb_str))
     .fetch_all(db)
     .await?;
-    Ok(rows)
+    Ok(rows
+        .into_iter()
+        .map(|r| FewShotExample {
+            teks: r.0,
+            kode_ai: r.1,
+            kode_terbaik: r.2,
+            ai_deskripsi: r.3,
+            ai_path: r.4,
+            kb_deskripsi: r.5,
+            kb_path: r.6,
+        })
+        .collect())
 }
 
 /// Format teks few-shot untuk disisipkan ke prompt rerank.
-pub fn format_fewshot(examples: &[(String, String, String)]) -> String {
+/// Menyertakan deskripsi & path kode awal & kode benar agar Gemini paham
+/// konteks fungsi/urusan dari tiap contoh koreksi (dipotong agar prompt ringkas).
+pub fn format_fewshot(examples: &[FewShotExample]) -> String {
     if examples.is_empty() {
         return String::new();
     }
     let mut out = String::from("===== CONTOH KOREKSI ARSIPARIS (kasus serupa sebelumnya) =====\n");
-    for (i, (naskah, kode_ai, kode_benar)) in examples.iter().enumerate() {
-        let naskah_short: String = naskah.chars().take(120).collect();
+    for (i, e) in examples.iter().enumerate() {
+        let teks: String = e.teks.chars().take(120).collect();
+        let ai_d: String = e.ai_deskripsi.chars().take(100).collect();
+        let kb_d: String = e.kb_deskripsi.chars().take(100).collect();
+        let ai_p: String = e.ai_path.chars().take(200).collect();
+        let kb_p: String = e.kb_path.chars().take(200).collect();
         out.push_str(&format!(
-            "{}. Naskah: \"{}\". Kode awal (keliru): {}. Kode benar setelah koreksi arsiparis: {}.\n",
-            i + 1,
-            naskah_short,
-            kode_ai,
-            kode_benar
+            "{}. Naskah: \"{}\". Kode awal (keliru): {} — {}. Path: {}. Kode benar setelah koreksi arsiparis: {} — {}. Path: {}.\n",
+            i + 1, teks, e.kode_ai, ai_d, ai_p, e.kode_terbaik, kb_d, kb_p
         ));
     }
     out.push_str("Gunakan contoh ini sebagai panduan: bila naskah saat ini serupa dengan suatu contoh, prioritaskan kode benar yang telah dikoreksi arsiparis tersebut.\n");
@@ -276,4 +307,33 @@ pub async fn search_codes(db: &PgPool, q: &str) -> Result<Vec<(String, String, S
     .fetch_all(db)
     .await?;
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_fewshot_menyertakan_deskripsi_dan_path() {
+        let ex = vec![FewShotExample {
+            teks: "laporan realisasi anggaran triwulan".into(),
+            kode_ai: "900.03.10".into(),
+            kode_terbaik: "900.03.10.01".into(),
+            ai_deskripsi: "LRA".into(),
+            ai_path: "KEUANGAN > LAPORAN".into(),
+            kb_deskripsi: "Laporan Realisasi Anggaran (LRA)".into(),
+            kb_path: "KEUANGAN > LAPORAN > LRA".into(),
+        }];
+        let out = format_fewshot(&ex);
+        assert!(out.contains("Naskah: \"laporan realisasi anggaran triwulan\""));
+        assert!(out.contains("Kode awal (keliru): 900.03.10 — LRA. Path: KEUANGAN > LAPORAN."));
+        assert!(out.contains(
+            "Kode benar setelah koreksi arsiparis: 900.03.10.01 — Laporan Realisasi Anggaran (LRA). Path: KEUANGAN > LAPORAN > LRA."
+        ));
+    }
+
+    #[test]
+    fn format_fewshot_kosong_menghasilkan_string_kosong() {
+        assert_eq!(format_fewshot(&[]), "");
+    }
 }
