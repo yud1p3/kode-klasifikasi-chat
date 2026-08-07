@@ -581,6 +581,8 @@ function App() {
   const [deletePassword, setDeletePassword] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deleteLockout, setDeleteLockout] = useState<number | null>(null)
+  const deleteLockoutRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 
   // Keluar: hapus sesi lokal. Didefinisikan lebih awal (useCallback stabil)
@@ -696,8 +698,30 @@ function App() {
       .catch(() => {})
   }, [token, API_BASE])
 
+  const startDeleteLockout = useCallback((seconds: number) => {
+    setDeleteLockout(seconds)
+    if (deleteLockoutRef.current) clearInterval(deleteLockoutRef.current)
+    deleteLockoutRef.current = setInterval(() => {
+      setDeleteLockout(prev => {
+        if (prev === null || prev <= 1) {
+          if (deleteLockoutRef.current) clearInterval(deleteLockoutRef.current)
+          return null
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }, [])
+
+  const closeDeleteModal = useCallback(() => {
+    setDeleteTarget(null)
+    setDeletePassword('')
+    setDeleteError(null)
+    if (deleteLockoutRef.current) clearInterval(deleteLockoutRef.current)
+    setDeleteLockout(null)
+  }, [])
+
   const confirmDelete = async () => {
-    if (!deleteTarget || !deletePassword.trim()) return
+    if (!deleteTarget || !deletePassword.trim() || deleteLockout !== null) return
     setDeleting(true)
     setDeleteError(null)
     try {
@@ -707,8 +731,7 @@ function App() {
         body: JSON.stringify({ password: deletePassword })
       })
       if (r.ok) {
-        setDeleteTarget(null)
-        setDeletePassword('')
+        closeDeleteModal()
         fetchStats()
       } else {
         const err = await r.json().catch(() => null) as ErrorResponse | null
@@ -717,7 +740,12 @@ function App() {
           setDeleteTarget(null)
           return
         }
-        setDeleteError(err?.error || `Gagal menghapus (HTTP ${r.status})`)
+        if (r.status === 429 && err?.retry_after_secs) {
+          // Terkunci anti brute-force → tampilkan countdown sisa waktu
+          startDeleteLockout(err.retry_after_secs)
+        } else {
+          setDeleteError(err?.error || `Gagal menghapus (HTTP ${r.status})`)
+        }
       }
     } catch {
       setDeleteError('Gagal terhubung ke server')
@@ -835,6 +863,7 @@ function App() {
       if (cooldownRef.current) clearInterval(cooldownRef.current)
       if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current)
       if (kodeSearchTimerRef.current) clearTimeout(kodeSearchTimerRef.current)
+      if (deleteLockoutRef.current) clearInterval(deleteLockoutRef.current)
     }
   }, [])
 
@@ -1515,7 +1544,13 @@ function App() {
           onApplyFilter={applyStatsFilter}
           onClearFilter={clearStatsFilter}
           canDelete={isAdmin}
-          onDeleteClick={(r) => { setDeleteTarget(r); setDeletePassword(''); setDeleteError(null) }}
+          onDeleteClick={(r) => {
+            setDeleteTarget(r)
+            setDeletePassword('')
+            setDeleteError(null)
+            if (deleteLockoutRef.current) clearInterval(deleteLockoutRef.current)
+            setDeleteLockout(null)
+          }}
         />
       )}
 
@@ -1539,7 +1574,7 @@ function App() {
               </div>
               <button
                 type="button"
-                onClick={() => setDeleteTarget(null)}
+                onClick={closeDeleteModal}
                 className="shrink-0 p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-gray-800 transition-colors"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1552,27 +1587,35 @@ function App() {
               ⚠️ Tindakan ini permanen dan tidak dapat dibatalkan. Hanya admin yang dapat menghapus, dengan memasukkan password secret server.
             </div>
 
+            {deleteLockout !== null ? (
+              <div className="rounded-lg border border-amber-800/60 bg-amber-950/40 px-3 py-2.5 text-xs text-amber-300 flex items-center gap-2">
+                <span>🔒 Terlalu banyak percobaan password.</span>
+                <span className="ml-auto font-semibold tabular-nums whitespace-nowrap">
+                  Coba lagi dalam {formatDuration(deleteLockout)}
+                </span>
+              </div>
+            ) : deleteError ? (
+              <div className="text-xs text-red-400">{deleteError}</div>
+            ) : null}
+
             <div>
               <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Password secret (DELETE_SECRET)</label>
               <input
                 type="password"
                 value={deletePassword}
                 onChange={(e) => setDeletePassword(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && deletePassword.trim() && !deleting) confirmDelete() }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && deletePassword.trim() && !deleting && deleteLockout === null) confirmDelete() }}
                 placeholder="Masukkan password admin..."
-                autoFocus
-                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500"
+                autoFocus={deleteLockout === null}
+                disabled={deleting || deleteLockout !== null}
+                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500 disabled:opacity-50"
               />
             </div>
-
-            {deleteError && (
-              <div className="text-xs text-red-400">{deleteError}</div>
-            )}
 
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setDeleteTarget(null)}
+                onClick={closeDeleteModal}
                 disabled={deleting}
                 className="text-xs px-4 py-2 rounded-lg text-gray-400 hover:text-white transition-colors disabled:opacity-50"
               >
@@ -1581,10 +1624,14 @@ function App() {
               <button
                 type="button"
                 onClick={confirmDelete}
-                disabled={!deletePassword.trim() || deleting}
+                disabled={!deletePassword.trim() || deleting || deleteLockout !== null}
                 className="text-xs px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 transition-colors"
               >
-                {deleting ? 'Menghapus...' : '🗑 Hapus'}
+                {deleteLockout !== null
+                  ? '🔒 Terkunci'
+                  : deleting
+                    ? 'Menghapus...'
+                    : '🗑 Hapus'}
               </button>
             </div>
           </div>
