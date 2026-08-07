@@ -1,0 +1,22 @@
+[Unit]
+Description=Kode Klasifikasi Arsip — AI Chat (backend Rust + Meilisearch)
+Documentation=https://github.com/yud1p3/kode-klasifikasi-chat
+After=network-online.target meilisearch.service postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Placeholder: disubstitusi oleh deploy-to-vps.sh
+User=__VPS_USER__
+Group=__VPS_USER__
+WorkingDirectory=%h/__REMOTE_HOME__
+ExecStart=%h/__REMOTE_HOME__/kode-klasifikasi-chat
+Restart=always
+RestartSec=5
+# .env dibaca OTOMATIS oleh aplikasi (dotenv) dari WorkingDirectory.
+# Pastikan ~/__REMOTE_HOME__/.env sudah dibuat (lihat PANDUAN_DEPLOY_VPS.md §5).
+# CATATAN: jangan pakai EnvironmentFile untuk .env ini — nilai yang
+# mengandung $ atau kutip ('$r!k@nd1') bisa di-parse beda oleh systemd.
+
+[Install]
+WantedBy=multi-user.target
