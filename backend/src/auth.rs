@@ -20,7 +20,9 @@ pub struct AuthConfig {
     pub enabled: bool,
     pub client_id: String,
     pub client_secret: String,
-    pub redirect_uri: String,
+    /// Daftar redirect URI yang diizinkan (GOOGLE_REDIRECT_URI, comma-separated).
+    /// Dipakai untuk mendukung multi-origin: localhost (dev) + domain publik (ngrok).
+    pub redirect_uris: Vec<String>,
     pub jwt_secret: String,
     pub jwt_exp_secs: i64,
 }
@@ -29,7 +31,9 @@ pub struct AuthConfig {
 pub struct AuthConfigInfo {
     pub enabled: bool,
     pub client_id: String,
+    /// URI pertama (kompatibilitas); gunakan `redirect_uris` untuk daftar lengkap.
     pub redirect_uri: String,
+    pub redirect_uris: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -44,8 +48,13 @@ impl AuthConfig {
     pub fn from_env() -> Self {
         let client_id = env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
         let client_secret = env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default();
-        let redirect_uri = env::var("GOOGLE_REDIRECT_URI")
-            .unwrap_or_else(|_| "http://localhost:5174/auth/callback".into());
+        // Bisa lebih dari satu redirect URI (comma-separated): localhost + domain publik
+        let redirect_uris: Vec<String> = env::var("GOOGLE_REDIRECT_URI")
+            .unwrap_or_else(|_| "http://localhost:5174/auth/callback".into())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         let jwt_secret = env::var("JWT_SECRET")
             .unwrap_or_else(|_| "kode-klasifikasi-chat-dev-secret-ganti-di-produksi".into());
         let jwt_exp_secs = env::var("JWT_EXP_SECS")
@@ -53,7 +62,7 @@ impl AuthConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(12 * 3600);
         let enabled = !client_id.is_empty() && !client_secret.is_empty();
-        Self { enabled, client_id, client_secret, redirect_uri, jwt_secret, jwt_exp_secs }
+        Self { enabled, client_id, client_secret, redirect_uris, jwt_secret, jwt_exp_secs }
     }
 
     /// True bila JWT_SECRET memakai default bawaan (peringatan keamanan).
@@ -65,14 +74,22 @@ impl AuthConfig {
         AuthConfigInfo {
             enabled: self.enabled,
             client_id: self.client_id.clone(),
-            redirect_uri: self.redirect_uri.clone(),
+            redirect_uri: self.redirect_uris.first().cloned().unwrap_or_default(),
+            redirect_uris: self.redirect_uris.clone(),
         }
+    }
+
+    /// Cek apakah URI termasuk daftar redirect yang diizinkan.
+    pub fn is_allowed_redirect(&self, uri: &str) -> bool {
+        self.redirect_uris.iter().any(|r| r == uri)
     }
 }
 
 /// Tukar authorization code (dari callback Google) menjadi id_token via PKCE,
 /// verifikasi signature RS256 (JWKS Google), lalu kembalikan identitas user.
-pub async fn exchange_code(cfg: &AuthConfig, code: &str, code_verifier: &str) -> Result<AuthUser> {
+/// Tukar authorization code → token. `redirect_uri` HARUS sama dengan yang
+/// dipakai saat membangun URL login (Google memvalidasinya saat exchange).
+pub async fn exchange_code(cfg: &AuthConfig, code: &str, code_verifier: &str, redirect_uri: &str) -> Result<AuthUser> {
     let client = reqwest::Client::new();
     let params = [
         ("client_id", cfg.client_id.clone()),
@@ -80,7 +97,7 @@ pub async fn exchange_code(cfg: &AuthConfig, code: &str, code_verifier: &str) ->
         ("code", code.to_string()),
         ("code_verifier", code_verifier.to_string()),
         ("grant_type", "authorization_code".to_string()),
-        ("redirect_uri", cfg.redirect_uri.clone()),
+        ("redirect_uri", redirect_uri.to_string()),
     ];
     let resp = client
         .post("https://oauth2.googleapis.com/token")

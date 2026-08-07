@@ -479,6 +479,10 @@ async fn quota_info(state: web::Data<AppState>) -> HttpResponse {
 struct GoogleAuthRequest {
     code: String,
     code_verifier: String,
+    /// Redirect URI yang dipakai frontend saat login (sesuai origin-nya).
+    /// Divalidasi terhadap daftar GOOGLE_REDIRECT_URI sebelum dipakai tukar code.
+    #[serde(default)]
+    redirect_uri: Option<String>,
 }
 
 /// Konfigurasi auth untuk frontend (enabled, client_id, redirect_uri).
@@ -497,7 +501,14 @@ async fn auth_google(
             retry_after_secs: None,
         });
     }
-    match auth::exchange_code(&state.auth, &body.code, &body.code_verifier).await {
+    // Pakai redirect_uri yang dikirim frontend BILA termasuk daftar yang diizinkan;
+    // selain itu (atau kosong) fallback ke URI pertama.
+    let redirect_uri = body
+        .redirect_uri
+        .clone()
+        .filter(|u| state.auth.is_allowed_redirect(u))
+        .unwrap_or_else(|| state.auth.redirect_uris.first().cloned().unwrap_or_default());
+    match auth::exchange_code(&state.auth, &body.code, &body.code_verifier, &redirect_uri).await {
         Ok(user) => match auth::issue_token(&state.auth, &user) {
             Ok(token) => HttpResponse::Ok().json(serde_json::json!({ "token": token, "user": user })),
             Err(e) => HttpResponse::InternalServerError().json(ErrorResponse {
@@ -1026,7 +1037,7 @@ async fn main() -> anyhow::Result<()> {
     // Konfigurasi autentikasi Google (nonaktif bila GOOGLE_CLIENT_ID kosong)
     let auth_cfg = auth::AuthConfig::from_env();
     if auth_cfg.enabled {
-        println!("🔐 Auth Google AKTIF (redirect: {})", auth_cfg.redirect_uri);
+        println!("🔐 Auth Google AKTIF (redirect: {})", auth_cfg.redirect_uris.join(", "));
         if auth_cfg.uses_default_secret() {
             eprintln!("⚠️  WARNING: JWT_SECRET masih default! Set JWT_SECRET di .env untuk produksi.");
         }

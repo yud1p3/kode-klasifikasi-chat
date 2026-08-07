@@ -81,7 +81,8 @@ interface StatsFilter {
 interface AuthConfig {
   enabled: boolean
   client_id: string
-  redirect_uri: string
+  redirect_uri: string // URI pertama (kompatibilitas)
+  redirect_uris: string[]
 }
 
 interface FeedbackResult {
@@ -583,7 +584,9 @@ function App() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleteLockout, setDeleteLockout] = useState<number | null>(null)
   const deleteLockoutRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
+  // VITE_API_URL diisi saat dev (mis. http://localhost:3100). Bila kosong (build
+  // statis via nginx) → relatif ('') sehingga /api/* lewat proxy nginx (same-origin).
+  const API_BASE = (import.meta.env.VITE_API_URL as string) || ''
 
   // Keluar: hapus sesi lokal. Didefinisikan lebih awal (useCallback stabil)
   // agar bisa dipakai oleh fetchQuota/fetchStats saat token kedaluwarsa (401)
@@ -637,10 +640,12 @@ function App() {
     const stored = sessionStorage.getItem('kk_oauth_state')
     if (code && state && state === stored) {
       const verifier = sessionStorage.getItem('kk_oauth_verifier') || ''
+      // Redirect URI yang tadi dipakai saat membuka URL login (harus sama saat tukar code)
+      const redirect_uri = sessionStorage.getItem('kk_oauth_redirect') || ''
       fetch(`${API_BASE}/api/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, code_verifier: verifier })
+        body: JSON.stringify({ code, code_verifier: verifier, redirect_uri })
       }).then(r => r.json()).then((res: { token?: string; user?: AuthUser }) => {
         if (res.token && res.user) {
           localStorage.setItem('kk_token', res.token)
@@ -652,6 +657,7 @@ function App() {
     }
     sessionStorage.removeItem('kk_oauth_state')
     sessionStorage.removeItem('kk_oauth_verifier')
+    sessionStorage.removeItem('kk_oauth_redirect')
     window.history.replaceState({}, '', '/')
   }, [API_BASE])
 
@@ -759,9 +765,15 @@ function App() {
     const state = base64UrlEncode(crypto.getRandomValues(new Uint8Array(16)))
     sessionStorage.setItem('kk_oauth_verifier', verifier)
     sessionStorage.setItem('kk_oauth_state', state)
+    // Pilih redirect URI yang cocok dengan origin saat ini (localhost vs domain publik),
+    // fallback ke URI pertama. Disimpan agar sama saat tukar code di callback.
+    const redirect_uri = (authConfig.redirect_uris.find(u => u.startsWith(window.location.origin))
+      || authConfig.redirect_uris[0]
+      || '').trim()
+    sessionStorage.setItem('kk_oauth_redirect', redirect_uri)
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
     url.searchParams.set('client_id', authConfig.client_id)
-    url.searchParams.set('redirect_uri', authConfig.redirect_uri)
+    url.searchParams.set('redirect_uri', redirect_uri)
     url.searchParams.set('response_type', 'code')
     url.searchParams.set('scope', 'openid email profile')
     url.searchParams.set('code_challenge', challenge)
