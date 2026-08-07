@@ -1167,22 +1167,6 @@ function App() {
               📅 {quota.chat.rpd_used}/{quota.chat.rpd_limit} · ⚡ {quota.chat.rpm_used}/{quota.chat.rpm_limit}
             </div>
           )}
-          <button
-            type="button"
-            onClick={() => setView('settings')}
-            title="Kelola API Key Gemini (multi-key)"
-            className={`hidden md:flex w-full items-center gap-2 text-[11px] px-2.5 py-2 rounded-lg border transition-colors ${
-              userApiKeys.length > 0
-                ? 'border-violet-800/60 bg-violet-950/40 text-violet-300 hover:border-violet-600'
-                : 'border-dashed border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-500'
-            }`}
-          >
-            <span>🔑</span>
-            <span className="flex-1 text-left truncate">
-              {userApiKeys.length > 0 ? `${userApiKeys.length} API Key aktif` : 'Tambah API Key'}
-            </span>
-            <span>⚙️</span>
-          </button>
           {user && (
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 shrink-0 rounded-full bg-violet-600 flex items-center justify-center text-xs font-bold">
