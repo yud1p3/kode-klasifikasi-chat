@@ -221,33 +221,68 @@ pub fn format_fewshot(examples: &[FewShotExample]) -> String {
     out
 }
 
-/// Statistik feedback untuk UI/admin.
-pub async fn fetch_stats(db: &PgPool) -> Result<Value> {
+/// Bangun klausa WHERE dari filter statistik. Mengembalikan (klausa "WHERE ...",
+/// klausa "AND ...") — yang kedua untuk query yang sudah punya WHERE sendiri.
+/// Aman dari SQL injection: status di-whitelist, perihal di-escape kutipnya.
+fn build_stats_filter(perihal: Option<&str>, status: Option<&str>) -> (String, String) {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(s) = status {
+        let s = s.trim().to_lowercase();
+        if matches!(s.as_str(), "validated" | "rejected" | "pending") {
+            parts.push(format!("status = '{s}'"));
+        }
+    }
+    if let Some(p) = perihal {
+        let p = p.trim();
+        if !p.is_empty() {
+            // Escape kutip tunggal agar aman dimasukkan ke literal SQL
+            let esc = p.replace('\'', "''");
+            parts.push(format!("(perihal ILIKE '%{esc}%' OR naskah ILIKE '%{esc}%')"));
+        }
+    }
+    if parts.is_empty() {
+        return (String::new(), String::new());
+    }
+    let joined = parts.join(" AND ");
+    (format!("WHERE {joined}"), format!(" AND {joined}"))
+}
+
+/// Statistik feedback untuk UI/admin. Mendukung filter opsional perihal (kata
+/// kunci pada perihal/naskah) dan status (validated|rejected|pending).
+pub async fn fetch_stats(db: &PgPool, perihal: Option<&str>, status: Option<&str>) -> Result<Value> {
+    let (where_sql, and_sql) = build_stats_filter(perihal, status);
+
     let totals = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
-        "SELECT
-           (SELECT count(*) FROM klasifikasi_feedback),
-           count(*) FILTER (WHERE feedback_type = 'positive'),
-           count(*) FILTER (WHERE feedback_type = 'correction'),
-           count(*) FILTER (WHERE feedback_type = 'correction' AND status = 'validated'),
-           count(*) FILTER (WHERE feedback_type = 'correction' AND status = 'rejected')
-         FROM klasifikasi_feedback",
+        &format!(
+            "SELECT
+               count(*) AS total,
+               count(*) FILTER (WHERE feedback_type = 'positive'),
+               count(*) FILTER (WHERE feedback_type = 'correction'),
+               count(*) FILTER (WHERE feedback_type = 'correction' AND status = 'validated'),
+               count(*) FILTER (WHERE feedback_type = 'correction' AND status = 'rejected')
+             FROM klasifikasi_feedback\n             {where_sql}"
+        ),
     )
     .fetch_one(db)
     .await?;
 
     let top_kode = sqlx::query_as::<_, (String, i64)>(
-        "SELECT COALESCE(kode_terbaik, kode_koreksi) AS k, count(*) AS c
-         FROM klasifikasi_feedback
-         WHERE feedback_type = 'correction' AND status = 'validated'
-         GROUP BY 1 ORDER BY 2 DESC LIMIT 5",
+        &format!(
+            "SELECT COALESCE(kode_terbaik, kode_koreksi) AS k, count(*) AS c
+             FROM klasifikasi_feedback
+             WHERE feedback_type = 'correction' AND status = 'validated'{and_sql}
+             GROUP BY 1 ORDER BY 2 DESC LIMIT 5"
+        ),
     )
     .fetch_all(db)
     .await?;
 
     let top_user = sqlx::query_as::<_, (String, i64)>(
-        "SELECT COALESCE(NULLIF(user_email,''), user_name, 'anonim') AS u, count(*) AS c
-         FROM klasifikasi_feedback
-         GROUP BY 1 ORDER BY 2 DESC LIMIT 5",
+        &format!(
+            "SELECT COALESCE(NULLIF(user_email,''), user_name, 'anonim') AS u, count(*) AS c
+             FROM klasifikasi_feedback\n             {where_sql}
+             GROUP BY 1 ORDER BY 2 DESC LIMIT 5"
+        ),
     )
     .fetch_all(db)
     .await?;
@@ -255,17 +290,19 @@ pub async fn fetch_stats(db: &PgPool) -> Result<Value> {
     // Feedback terbaru (untuk tabel di dashboard) — waktu diformat di SQL agar
     // tidak perlu dependency chrono. Zona Asia/Jakarta (server dinas lokal).
     let recent = sqlx::query_as::<_, (i64, String, String, String, String, String, String, String, String, String, String)>(
-        "SELECT id, feedback_type, kode_ai,
-                COALESCE(kode_koreksi, ''),
-                status,
-                COALESCE(NULLIF(user_name,''), 'Anonim'),
-                COALESCE(NULLIF(user_email,''), '-'),
-                COALESCE(validasi_penjelasan, ''),
-                COALESCE(NULLIF(perihal,''), LEFT(naskah, 120)),
-                LEFT(naskah, 120),
-                to_char(created_at AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD HH24:MI')
-         FROM klasifikasi_feedback
-         ORDER BY id DESC LIMIT 20",
+        &format!(
+            "SELECT id, feedback_type, kode_ai,
+                    COALESCE(kode_koreksi, ''),
+                    status,
+                    COALESCE(NULLIF(user_name,''), 'Anonim'),
+                    COALESCE(NULLIF(user_email,''), '-'),
+                    COALESCE(validasi_penjelasan, ''),
+                    COALESCE(NULLIF(perihal,''), LEFT(naskah, 120)),
+                    LEFT(naskah, 120),
+                    to_char(created_at AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD HH24:MI')
+             FROM klasifikasi_feedback\n             {where_sql}
+             ORDER BY id DESC LIMIT 20"
+        ),
     )
     .fetch_all(db)
     .await?;

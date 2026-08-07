@@ -24,9 +24,39 @@ const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(10);
 #[derive(Debug, Deserialize)]
 struct ChatRequest {
     message: String,
-    /// API Key Gemini milik pengguna (opsional). Jika diisi, diprioritaskan di atas key server.
+    /// API Key Gemini milik pengguna (opsional, legacy tunggal). Diprioritaskan di atas key server.
     #[serde(default)]
     api_key: Option<String>,
+    /// Daftar API Key Gemini milik pengguna (multi-key). Dicoba berurutan (rotasi)
+    /// sebelum fallback ke key server. `api_key` tunggal tetap didukung sebagai kompatibilitas.
+    #[serde(default)]
+    api_keys: Option<Vec<String>>,
+}
+
+/// Gabungan key pengguna (api_key legacy + api_keys), urut, deduplikasi, tanpa kosong.
+fn merge_user_keys(api_key: &Option<String>, api_keys: &Option<Vec<String>>) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    if let Some(k) = api_key {
+        let t = k.trim();
+        if !t.is_empty() {
+            v.push(t.to_string());
+        }
+    }
+    if let Some(ks) = api_keys {
+        for k in ks {
+            let t = k.trim();
+            if !t.is_empty() && !v.iter().any(|x| x == t) {
+                v.push(t.to_string());
+            }
+        }
+    }
+    v
+}
+
+impl ChatRequest {
+    fn user_keys(&self) -> Vec<String> {
+        merge_user_keys(&self.api_key, &self.api_keys)
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -61,6 +91,91 @@ struct AppState {
     search_backend: String,
     quota: quota::Quota,
     auth: auth::AuthConfig,
+    /// Email admin (ADMIN_EMAILS, comma-separated) — satu-satunya yang boleh menghapus feedback.
+    admin_emails: Vec<String>,
+    /// Password secret (DELETE_SECRET) yang wajib dimasukkan admin untuk menghapus feedback.
+    delete_secret: String,
+    /// Pengaman anti brute-force percobaan password hapus feedback.
+    delete_guard: DeleteGuard,
+}
+
+impl AppState {
+    fn is_admin(&self, email: &str) -> bool {
+        self.admin_emails.iter().any(|e| e.eq_ignore_ascii_case(email.trim()))
+    }
+}
+
+/// Bandingkan dua string dengan waktu konstan (hindari timing attack pada password).
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Pengaman anti brute-force untuk password hapus feedback.
+/// Pelacakan per email admin: setelah N percobaan gagal berurutan, email
+/// terkunci selama durasi tertentu. State in-memory (reset saat server restart).
+struct DeleteGuard {
+    max_attempts: u32,
+    lockout_secs: u64,
+    /// email → (jumlah gagal berurutan saat ini, waktu terkunci sampai)
+    state: std::sync::Mutex<HashMap<String, (u32, Option<std::time::Instant>)>>,
+}
+
+impl DeleteGuard {
+    fn new(max_attempts: u32, lockout_secs: u64) -> Self {
+        Self {
+            max_attempts: max_attempts.max(1),
+            // Clamp minimal 1 agar DELETE_LOCKOUT_SECS=0 tidak membatalkan proteksi
+            lockout_secs: lockout_secs.max(1),
+            state: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Ok bila boleh mencoba password. Err(detik tersisa) bila sedang terkunci.
+    fn check(&self, email: &str) -> Result<(), u64> {
+        let st = self.state.lock().unwrap();
+        if let Some((_, Some(until))) = st.get(email) {
+            let now = std::time::Instant::now();
+            if now < *until {
+                return Err(until.duration_since(now).as_secs() + 1);
+            }
+        }
+        Ok(())
+    }
+
+    /// Catat percobaan gagal. Mengembalikan Some(detik lockout) bila percobaan
+    /// ini memicu penguncian (N gagal berurutan tercapai).
+    fn record_fail(&self, email: &str) -> Option<u64> {
+        let mut st = self.state.lock().unwrap();
+        let now = std::time::Instant::now();
+        let (count, until) = st.entry(email.to_string()).or_insert((0, None));
+        // Lockout lama sudah lewat → hitung ulang dari nol
+        if let Some(u) = until {
+            if now >= *u {
+                *count = 0;
+                *until = None;
+            }
+        }
+        *count += 1;
+        if *count >= self.max_attempts {
+            *until = Some(now + std::time::Duration::from_secs(self.lockout_secs));
+            return Some(self.lockout_secs);
+        }
+        None
+    }
+
+    /// Berhasil → bersihkan riwayat percobaan email ini.
+    fn record_success(&self, email: &str) {
+        self.state.lock().unwrap().remove(email);
+    }
 }
 
 /// Susun teks untuk embedding yang KONSISTEN dengan query chat:
@@ -71,7 +186,7 @@ struct AppState {
 /// perihal_lengkap (detail apa adanya) untuk ditampilkan di UI & feedback.
 /// Fallback ke teks asli bila gagal / rate limit.
 /// Catatan: setiap pemanggilan select_fungsi menghabiskan 1 kuota chat.
-async fn build_embed_query(state: &AppState, api_key: Option<&str>, message: &str) -> (String, String) {
+async fn build_embed_query(state: &AppState, api_keys: &[String], message: &str) -> (String, String) {
     // Baca Fungsi/Urusan induk langsung dari DB (distinct level-1 path)
     let daftar_fungsi: String = match sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT trim(deskripsi) FROM klasifikasi_embedding WHERE LENGTH(kode) = 3 ORDER BY 1"
@@ -87,7 +202,7 @@ async fn build_embed_query(state: &AppState, api_key: Option<&str>, message: &st
     };
     match state
         .key_rotator
-        .try_all_prefer(api_key, |key| {
+        .try_all_prefer(api_keys, |key| {
             let msg = message.to_string();
             let df = daftar_fungsi.clone();
             async move { gemini::select_fungsi(&key, &msg, &df).await }
@@ -144,6 +259,8 @@ async fn chat(
             retry_after_secs: None,
         });
     }
+    // Daftar API Key pengguna (multi-key, rotasi otomatis sebelum fallback key server)
+    let keys = body.user_keys();
 
     // Rate limiter — hanya di level request, bukan per-key
     {
@@ -181,9 +298,9 @@ async fn chat(
 
     // Susun teks query embedding — dipakai juga saat menyimpan feedback
     // (build_embed_query) agar few-shot dicocokkan dalam ruang embedding yang sama.
-    let (embed_query, perihal_lengkap) = build_embed_query(&state, body.api_key.as_deref(), message).await;
+    let (embed_query, perihal_lengkap) = build_embed_query(&state, &keys, message).await;
 
-    let embedding = match state.key_rotator.try_all_prefer(body.api_key.as_deref(), |key| {
+    let embedding = match state.key_rotator.try_all_prefer(&keys, |key| {
         let msg = embed_query.clone();
         async move { gemini::embed_text(&key, &msg).await }
     }).await {
@@ -249,7 +366,7 @@ async fn chat(
         }
     };
 
-    let (reranked, explanation, perihal_rerank) = match state.key_rotator.try_all_prefer(body.api_key.as_deref(), |key| {
+    let (reranked, explanation, perihal_rerank) = match state.key_rotator.try_all_prefer(&keys, |key| {
         let msg = message.to_string();
         let fs = fewshot_text.clone();
         let res = results.clone();
@@ -395,10 +512,18 @@ async fn auth_google(
     }
 }
 
-/// Info user yang sedang login (dari JWT).
+/// Info user yang sedang login (dari JWT) + status admin.
 async fn me(state: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
     match auth::require_user(&req, &state.auth) {
-        Ok(u) => HttpResponse::Ok().json(u),
+        Ok(u) => {
+            let is_admin = state.is_admin(&u.email);
+            HttpResponse::Ok().json(serde_json::json!({
+                "sub": u.sub,
+                "email": u.email,
+                "name": u.name,
+                "is_admin": is_admin
+            }))
+        }
         Err(resp) => resp,
     }
 }
@@ -416,11 +541,20 @@ struct FeedbackRequest {
     /// Perihal naskah (hasil rerank AI saat chat) — dipakai di prompt validasi & statistik.
     #[serde(default)]
     perihal: Option<String>,
-    /// API Key Gemini milik pengguna (opsional). Diprioritaskan di atas key server.
+    /// API Key Gemini milik pengguna (opsional, legacy tunggal). Diprioritaskan di atas key server.
     #[serde(default)]
     api_key: Option<String>,
+    /// Daftar API Key Gemini milik pengguna (multi-key, rotasi otomatis).
+    #[serde(default)]
+    api_keys: Option<Vec<String>>,
     #[serde(default)]
     candidates: Vec<feedback::Candidate>,
+}
+
+impl FeedbackRequest {
+    fn user_keys(&self) -> Vec<String> {
+        merge_user_keys(&self.api_key, &self.api_keys)
+    }
 }
 
 /// Terima feedback (👍 atau koreksi), validasi koreksi via Gemini, simpan ke DB.
@@ -448,6 +582,8 @@ async fn submit_feedback(
             retry_after_secs: None,
         });
     }
+    // Daftar API Key pengguna (multi-key, rotasi otomatis sebelum fallback key server)
+    let keys = body.user_keys();
 
     // Privasi: simpan naskah terpotong (cukup untuk substansi & few-shot)
     let naskah_store: String = msg.chars().take(1000).collect();
@@ -572,7 +708,7 @@ async fn submit_feedback(
     // Lapis 2: validasi Gemini (path lengkap + top-3 kandidat)
     let validasi = state
         .key_rotator
-        .try_all_prefer(body.api_key.as_deref(), |key| {
+        .try_all_prefer(&keys, |key| {
             let msg = msg.to_string();
             let ai_k = body.kode_ai.clone();
             let ai_d = ai_deskripsi.clone();
@@ -642,10 +778,10 @@ async fn submit_feedback(
     // embedding yang sama dengan query.
     let mut emb_store: Option<String> = None;
     if status == "validated" {
-        let (embed_text, _perihal_lengkap) = build_embed_query(&state, body.api_key.as_deref(), msg).await;
+        let (embed_text, _perihal_lengkap) = build_embed_query(&state, &keys, msg).await;
         if let Ok((emb, _)) = state
             .key_rotator
-            .try_all_prefer(body.api_key.as_deref(), |key| {
+            .try_all_prefer(&keys, |key| {
                 let t = embed_text.clone();
                 async move { gemini::embed_text(&key, &t).await }
             })
@@ -695,14 +831,100 @@ async fn submit_feedback(
 }
 
 /// Statistik feedback (total, validasi, kode teratas, user teratas).
-async fn feedback_stats(state: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
+/// Mendukung filter opsional: ?perihal=<kata kunci>&status=validated|rejected|pending
+async fn feedback_stats(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    query: web::Query<HashMap<String, String>>,
+) -> HttpResponse {
     if let Err(resp) = auth::require_user(&req, &state.auth) {
         return resp;
     }
-    match feedback::fetch_stats(&state.db).await {
+    let perihal = query.get("perihal").map(|s| s.as_str());
+    let status = query.get("status").map(|s| s.as_str());
+    match feedback::fetch_stats(&state.db, perihal, status).await {
         Ok(v) => HttpResponse::Ok().json(v),
         Err(e) => HttpResponse::InternalServerError().json(ErrorResponse {
             error: format!("Gagal baca statistik: {e}"),
+            retry_after_secs: None,
+        }),
+    }
+}
+
+/// Hapus feedback — hanya admin (ADMIN_EMAILS) dengan password secret (DELETE_SECRET).
+async fn delete_feedback(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    body: web::Json<HashMap<String, String>>,
+) -> HttpResponse {
+    let user = match auth::require_user(&req, &state.auth) {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+
+    // Lapis 1: hanya admin yang boleh menghapus
+    if !state.is_admin(&user.email) {
+        return HttpResponse::Forbidden().json(ErrorResponse {
+            error: "Hanya admin yang dapat menghapus feedback.".into(),
+            retry_after_secs: None,
+        });
+    }
+    // Lapis 2: fitur hapus harus dikonfigurasi (DELETE_SECRET)
+    if state.delete_secret.is_empty() {
+        return HttpResponse::ServiceUnavailable().json(ErrorResponse {
+            error: "Fitur hapus feedback nonaktif: DELETE_SECRET belum dikonfigurasi di server.".into(),
+            retry_after_secs: None,
+        });
+    }
+    // Lapis 3: anti brute-force — blokir bila email ini sedang terkunci
+    if let Err(wait) = state.delete_guard.check(&user.email) {
+        return HttpResponse::TooManyRequests().json(ErrorResponse {
+            error: format!(
+                "Terlalu banyak percobaan password yang gagal. Tunggu {wait} detik sebelum mencoba lagi."
+            ),
+            retry_after_secs: Some(wait),
+        });
+    }
+    // Lapis 4: verifikasi password secret (constant-time)
+    let password = body.get("password").cloned().unwrap_or_default();
+    if !constant_time_eq(&state.delete_secret, &password) {
+        // Catat kegagalan; bila batas tercapai → kunci email ini
+        if let Some(wait) = state.delete_guard.record_fail(&user.email) {
+            let dur = if wait >= 60 {
+                format!("{:.0} menit", wait as f64 / 60.0)
+            } else {
+                format!("{wait} detik")
+            };
+            eprintln!("🔒 Admin {} terkunci selama {dur} ({} percobaan gagal)", user.email, state.delete_guard.max_attempts);
+            return HttpResponse::TooManyRequests().json(ErrorResponse {
+                error: format!(
+                    "Terlalu banyak percobaan password ({}) — terkunci selama {dur}.",
+                    state.delete_guard.max_attempts
+                ),
+                retry_after_secs: Some(wait),
+            });
+        }
+        return HttpResponse::Forbidden().json(ErrorResponse {
+            error: "Password secret salah.".into(),
+            retry_after_secs: None,
+        });
+    }
+    state.delete_guard.record_success(&user.email);
+
+    let id = path.into_inner();
+    match sqlx::query("DELETE FROM klasifikasi_feedback WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        Ok(r) if r.rows_affected() > 0 => HttpResponse::Ok().json(serde_json::json!({"deleted": true})),
+        Ok(_) => HttpResponse::NotFound().json(ErrorResponse {
+            error: "Feedback tidak ditemukan.".into(),
+            retry_after_secs: None,
+        }),
+        Err(e) => HttpResponse::InternalServerError().json(ErrorResponse {
+            error: format!("Gagal menghapus feedback: {e}"),
             retry_after_secs: None,
         }),
     }
@@ -814,6 +1036,39 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Server running on http://{}:{}", host, port);
 
+    // Konfigurasi admin: email admin (boleh banyak, comma-separated) + password
+    // secret wajib untuk fitur hapus feedback.
+    let admin_emails: Vec<String> = env::var("ADMIN_EMAILS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty() && e.contains('@'))
+        .collect();
+    let delete_secret = env::var("DELETE_SECRET").unwrap_or_default();
+    if admin_emails.is_empty() {
+        eprintln!("⚠️  WARNING: ADMIN_EMAILS kosong — fitur hapus feedback nonaktif untuk semua user.");
+    } else {
+        println!("👑 Admin feedback: {}", admin_emails.join(", "));
+    }
+    if delete_secret.is_empty() {
+        eprintln!("⚠️  WARNING: DELETE_SECRET kosong — hapus feedback ditolak sampai DELETE_SECRET diisi.");
+    } else {
+        println!("🔒 DELETE_SECRET terkonfigurasi ({} karakter)", delete_secret.len());
+    }
+    // Pengaman anti brute-force hapus feedback (default: 5 gagal → lockout 15 menit)
+    let delete_max_attempts = env::var("DELETE_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    let delete_lockout_secs = env::var("DELETE_LOCKOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(15 * 60);
+    let delete_guard = DeleteGuard::new(delete_max_attempts, delete_lockout_secs);
+    if !delete_secret.is_empty() {
+        println!("🛡️  Anti brute-force hapus: {delete_max_attempts} percobaan gagal → lockout {delete_lockout_secs} detik");
+    }
+
     let meili_client = meili::MeiliSearch::new(meili_host, meili_key, meili_index, meili_hybrid);
     let quota = quota::Quota::new(quota_enabled, quota_chat_rpm, quota_chat_rpd, quota_embed_rpm, quota_embed_rpd);
 
@@ -826,6 +1081,9 @@ async fn main() -> anyhow::Result<()> {
         search_backend,
         quota,
         auth: auth_cfg,
+        admin_emails,
+        delete_secret,
+        delete_guard,
     });
 
     HttpServer::new(move || {
@@ -848,6 +1106,7 @@ async fn main() -> anyhow::Result<()> {
             .route("/api/me", web::get().to(me))
             .route("/api/feedback", web::post().to(submit_feedback))
             .route("/api/feedback/stats", web::get().to(feedback_stats))
+            .route("/api/feedback/{id}", web::delete().to(delete_feedback))
             .route("/api/codes", web::get().to(codes_search))
     })
     .bind((host.as_str(), port))?
@@ -855,4 +1114,47 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_guard_mengunci_setelah_n_gagal() {
+        let g = DeleteGuard::new(3, 900);
+        assert!(g.check("a@x").is_ok());
+        assert!(g.record_fail("a@x").is_none());
+        assert!(g.record_fail("a@x").is_none());
+        assert_eq!(g.record_fail("a@x"), Some(900)); // percobaan ke-3 → kunci
+        assert!(g.check("a@x").is_err()); // email ini terkunci
+        assert!(g.check("b@x").is_ok()); // email lain tidak terpengaruh
+    }
+
+    #[test]
+    fn delete_guard_sukses_mereset_counter() {
+        let g = DeleteGuard::new(3, 900);
+        g.record_fail("a@x");
+        g.record_fail("a@x");
+        g.record_success("a@x");
+        // Counter di-reset → butuh 3 gagal lagi untuk kunci
+        assert!(g.record_fail("a@x").is_none());
+        assert!(g.record_fail("a@x").is_none());
+        assert_eq!(g.record_fail("a@x"), Some(900));
+    }
+
+    #[test]
+    fn delete_guard_lockout_kedaluwarsa() {
+        let g = DeleteGuard::new(3, 1); // lockout 1 detik, butuh 3 gagal
+        g.record_fail("a@x");
+        g.record_fail("a@x");
+        assert_eq!(g.record_fail("a@x"), Some(1)); // ke-3 → kunci
+        assert!(g.check("a@x").is_err());
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(g.check("a@x").is_ok()); // lockout lewat
+        // Counter di-reset → butuh 3 gagal lagi untuk kunci
+        assert!(g.record_fail("a@x").is_none());
+        assert!(g.record_fail("a@x").is_none());
+        assert_eq!(g.record_fail("a@x"), Some(1));
+    }
 }

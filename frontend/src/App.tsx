@@ -70,6 +70,12 @@ interface AuthUser {
   sub: string
   email: string
   name: string
+  is_admin?: boolean
+}
+
+interface StatsFilter {
+  status: string // '' | 'validated' | 'rejected' | 'pending'
+  perihal: string
 }
 
 interface AuthConfig {
@@ -146,13 +152,197 @@ const EXAMPLE_QUERIES = [
   'Laporan keuangan triwulan III',
 ]
 
+// ---------- Pengaturan API Key (multi-key, toggle lihat/sembunyikan) ----------
+
+const KEYS_STORAGE = 'gemini_api_keys'
+
+/** Muat daftar key dari localStorage + migrasi key tunggal lama (gemini_api_key). */
+function loadSavedKeys(): string[] {
+  let arr: string[] = []
+  try { arr = JSON.parse(localStorage.getItem(KEYS_STORAGE) || '[]') } catch { arr = [] }
+  if (!Array.isArray(arr)) arr = []
+  const legacy = (localStorage.getItem('gemini_api_key') || '').trim()
+  if (legacy && !arr.includes(legacy)) arr = [legacy, ...arr]
+  if (arr.length > 0) localStorage.setItem(KEYS_STORAGE, JSON.stringify(arr))
+  localStorage.removeItem('gemini_api_key')
+  return arr
+}
+
+function ApiKeySettings({ keys, onSave }: {
+  keys: string[]
+  onSave: (keys: string[]) => void
+}) {
+  const [newKey, setNewKey] = useState('')
+  const [showAll, setShowAll] = useState(false)
+  const [showNew, setShowNew] = useState(false)
+
+  const addKey = () => {
+    const k = newKey.trim()
+    if (!k) return
+    if (!keys.includes(k)) onSave([...keys, k])
+    setNewKey('')
+  }
+
+  const removeKey = (k: string) => {
+    if (!window.confirm('Hapus API Key ini dari browser?')) return
+    onSave(keys.filter(x => x !== k))
+  }
+
+  const maskKey = (k: string) => (k.length <= 8 ? '••••••••' : '••••••••' + k.slice(-4))
+
+  const EyeIcon = ({ off }: { off: boolean }) => (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      {off ? (
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" />
+      ) : (
+        <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+      )}
+      <path strokeLinecap="round" strokeLinejoin="round" d={off ? '' : 'M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z'} />
+    </svg>
+  )
+
+  return (
+    <main className="flex-1 overflow-y-auto px-6 py-6">
+      <div className="max-w-2xl space-y-5">
+        {/* Kartu daftar key */}
+        <div className="rounded-xl border border-gray-800 bg-gray-950 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">API Key Gemini ({keys.length})</h3>
+              <p className="text-[10px] text-gray-600 mt-0.5">
+                Tersimpan hanya di browser ini (localStorage). Diprioritaskan di atas key server & dirotasi otomatis.
+              </p>
+            </div>
+            {keys.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowAll(!showAll)}
+                className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-colors"
+              >
+                {showAll ? '🙈 Sembunyikan' : '👁️ Lihat Semua'}
+              </button>
+            )}
+          </div>
+
+          {keys.length === 0 ? (
+            <div className="px-4 py-8 text-center text-sm text-gray-500">
+              Belum ada API Key tersimpan. Tambahkan key Gemini di bawah — boleh lebih dari satu untuk rotasi saat quota habis.
+            </div>
+          ) : (
+            <ul className="divide-y divide-gray-800/60">
+              {keys.map((k, i) => (
+                <li key={i} className="flex items-center gap-2 px-4 py-2.5">
+                  <span className="text-[10px] text-gray-600 shrink-0">#{i + 1}</span>
+                  <code className="flex-1 text-xs text-gray-300 font-mono truncate">
+                    {showAll ? k : maskKey(k)}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => setShowAll(!showAll)}
+                    title={showAll ? 'Sembunyikan key' : 'Lihat key'}
+                    className="shrink-0 p-1.5 rounded-lg text-gray-500 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
+                  >
+                    <EyeIcon off={!showAll} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeKey(k)}
+                    title="Hapus key"
+                    className="shrink-0 p-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                    </svg>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/* Form tambah key */}
+          <div className="px-4 py-3 border-t border-gray-800 bg-gray-900/50 flex flex-col sm:flex-row gap-2">
+            <div className="relative flex-1">
+              <input
+                type={showNew ? 'text' : 'password'}
+                value={newKey}
+                onChange={(e) => setNewKey(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addKey() } }}
+                placeholder="Tempel API Key baru... (mis. AIzaSy...)"
+                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 pr-10 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-violet-500"
+              />
+              <button
+                type="button"
+                onClick={() => setShowNew(!showNew)}
+                title={showNew ? 'Sembunyikan' : 'Lihat'}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-cyan-400 transition-colors"
+              >
+                {showNew ? '🙈' : '👁️'}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={addKey}
+              disabled={!newKey.trim()}
+              className="shrink-0 px-4 py-2 rounded-lg bg-violet-600 text-white text-xs font-medium hover:bg-violet-700 disabled:opacity-40 transition-colors"
+            >
+              + Tambah Key
+            </button>
+            {keys.length > 0 && (
+              <button
+                type="button"
+                onClick={() => { if (window.confirm('Hapus SEMUA API Key yang tersimpan di browser ini?')) onSave([]) }}
+                className="shrink-0 px-3 py-2 rounded-lg text-xs text-gray-500 hover:text-red-400 transition-colors"
+              >
+                Kosongkan semua
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Info cara kerja */}
+        <div className="rounded-xl border border-gray-800 bg-gray-950 p-4 text-xs text-gray-500 space-y-2 leading-relaxed">
+          <h4 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">💡 Cara kerja multi-key</h4>
+          <p>1. Key Anda dikirim bersama tiap permintaan klasifikasi dan dicoba <strong className="text-gray-300">berurutan</strong> (key #1, lalu #2, dst).</p>
+          <p>2. Saat satu key habis kuota (rate limit), backend otomatis beralih ke key berikutnya — lalu fallback ke key server bila semua key pengguna gagal.</p>
+          <p>3. Key dari project Google yang sama tetap berbagi quota yang sama; rotasi paling efektif bila tiap key berasal dari project berbeda.</p>
+          <p className="text-amber-400/80">⚠️ Key disimpan mentah di localStorage perangkat ini. Jangan simpan key pada perangkat publik/bersama.</p>
+        </div>
+      </div>
+    </main>
+  )
+}
+
 // ---------- Dashboard Statistik Feedback ----------
 
-function StatsDashboard({ stats, loading, onRefresh }: {
+function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onClearFilter, canDelete, onDeleteClick }: {
   stats: FeedbackStats | null
   loading: boolean
   onRefresh: () => void
+  filter: StatsFilter
+  onApplyFilter: (f: StatsFilter) => void
+  onClearFilter: () => void
+  canDelete: boolean
+  onDeleteClick: (r: RecentFeedback) => void
 }) {
+  // Input perihal lokal + debounce 300ms agar tidak membanjiri server per ketikan
+  const [perihalInput, setPerihalInput] = useState(filter.perihal)
+  const perihalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    setPerihalInput(filter.perihal)
+  }, [filter.perihal])
+
+  useEffect(() => () => {
+    if (perihalTimerRef.current) clearTimeout(perihalTimerRef.current)
+  }, [])
+
+  const onPerihalChange = (v: string) => {
+    setPerihalInput(v)
+    if (perihalTimerRef.current) clearTimeout(perihalTimerRef.current)
+    perihalTimerRef.current = setTimeout(() => {
+      onApplyFilter({ ...filter, perihal: v })
+    }, 300)
+  }
   if (loading && !stats) {
     return (
       <main className="flex-1 overflow-y-auto px-6 py-10 flex items-start justify-center">
@@ -188,16 +378,55 @@ function StatsDashboard({ stats, loading, onRefresh }: {
 
   return (
     <main className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
-      {/* Aksi */}
-      <div className="flex items-center justify-end">
+      {/* Aksi: filter + refresh */}
+      <div className="rounded-xl border border-gray-800 bg-gray-950 px-4 py-3 flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2">
+          <label className="text-[10px] text-gray-500 uppercase tracking-wider">Status</label>
+          <select
+            value={filter.status}
+            onChange={(e) => onApplyFilter({ ...filter, status: e.target.value })}
+            className="text-xs bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-gray-300 focus:outline-none focus:border-violet-500"
+          >
+            <option value="">Semua Status</option>
+            <option value="validated">✅ Valid</option>
+            <option value="rejected">✖️ Ditolak</option>
+            <option value="pending">⏳ Pending</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-2 flex-1 min-w-[180px]">
+          <label className="text-[10px] text-gray-500 uppercase tracking-wider">Perihal</label>
+          <input
+            value={perihalInput}
+            onChange={(e) => onPerihalChange(e.target.value)}
+            placeholder="Cari perihal / naskah..."
+            className="flex-1 text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white placeholder-gray-600 focus:outline-none focus:border-violet-500"
+          />
+        </div>
+        {(filter.status !== '' || filter.perihal.trim() !== '') && (
+          <button
+            type="button"
+            onClick={onClearFilter}
+            className="text-xs px-3 py-1.5 rounded-lg text-amber-400 hover:text-amber-300 transition-colors"
+          >
+            ✕ Reset filter
+          </button>
+        )}
         <button
           onClick={onRefresh}
           disabled={loading}
-          className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-50"
+          className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-50 ml-auto"
         >
           {loading ? 'Memuat...' : '🔄 Muat Ulang'}
         </button>
       </div>
+
+      {(filter.status !== '' || filter.perihal.trim() !== '') && (
+        <p className="text-[10px] text-gray-500">
+          Menampilkan hasil <span className="text-gray-300">difilter</span>
+          {filter.status && <> · status <span className="text-cyan-400">{filter.status}</span></>}
+          {filter.perihal.trim() && <> · perihal mengandung <span className="text-cyan-400">“{filter.perihal.trim()}”</span></>}
+        </p>
+      )}
 
       {/* Kartu KPI */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -264,7 +493,7 @@ function StatsDashboard({ stats, loading, onRefresh }: {
       <div className="rounded-xl border border-gray-800 bg-gray-950 overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
           <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Feedback Terbaru</h3>
-          <span className="text-[10px] text-gray-600">maks. 20 entri</span>
+          <span className="text-[10px] text-gray-600">maks. 20 entri{canDelete ? ' · hapus butuh password secret (admin)' : ''}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -277,6 +506,7 @@ function StatsDashboard({ stats, loading, onRefresh }: {
                 <th className="px-4 py-2 font-medium whitespace-nowrap">Koreksi</th>
                 <th className="px-4 py-2 font-medium whitespace-nowrap">Status</th>
                 <th className="px-4 py-2 font-medium">Catatan Validasi</th>
+                {canDelete && <th className="px-4 py-2 font-medium whitespace-nowrap">Aksi</th>}
               </tr>
             </thead>
             <tbody>
@@ -293,6 +523,20 @@ function StatsDashboard({ stats, loading, onRefresh }: {
                   </td>
                   <td className="px-4 py-2.5">{statusBadge(r.status)}</td>
                   <td className="px-4 py-2.5 text-gray-400 max-w-[240px] truncate" title={r.penjelasan}>{r.penjelasan || '—'}</td>
+                  {canDelete && (
+                    <td className="px-4 py-2.5">
+                      <button
+                        type="button"
+                        onClick={() => onDeleteClick(r)}
+                        title="Hapus feedback (admin)"
+                        className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-950/40 transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                        </svg>
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -309,7 +553,11 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [apiAvailable, setApiAvailable] = useState<boolean | null>(null)
   const [cooldown, setCooldown] = useState<number | null>(null)
-  const [userApiKey, setUserApiKey] = useState(() => localStorage.getItem("gemini_api_key") || "")
+  const [userApiKeys, setUserApiKeys] = useState<string[]>(() => loadSavedKeys())
+  const saveKeys = (keys: string[]) => {
+    setUserApiKeys(keys)
+    localStorage.setItem(KEYS_STORAGE, JSON.stringify(keys))
+  }
   const chatEndRef = useRef<HTMLDivElement>(null)
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -324,9 +572,15 @@ function App() {
   const [feedbackMap, setFeedbackMap] = useState<Record<number, FeedbackState>>({})
   const [correctionForm, setCorrectionForm] = useState<Record<number, CorrectionFormState>>({})
   const kodeSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [view, setView] = useState<'chat' | 'stats'>('chat')
+  const [view, setView] = useState<'chat' | 'stats' | 'settings'>('chat')
   const [stats, setStats] = useState<FeedbackStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
+  const [statsFilter, setStatsFilter] = useState<StatsFilter>({ status: '', perihal: '' })
+  const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem('kk_is_admin') === 'true')
+  const [deleteTarget, setDeleteTarget] = useState<RecentFeedback | null>(null)
+  const [deletePassword, setDeletePassword] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 
   // Keluar: hapus sesi lokal. Didefinisikan lebih awal (useCallback stabil)
@@ -335,8 +589,10 @@ function App() {
   const logout = useCallback(() => {
     localStorage.removeItem('kk_token')
     localStorage.removeItem('kk_user')
+    localStorage.removeItem('kk_is_admin')
     setToken('')
     setUser(null)
+    setIsAdmin(false)
     setView('chat')
   }, [])
 
@@ -397,22 +653,77 @@ function App() {
     window.history.replaceState({}, '', '/')
   }, [API_BASE])
 
-  const authHeaders = (json = true): HeadersInit => {
+  const authHeaders = useCallback((json = true): HeadersInit => {
     const h: Record<string, string> = {}
     if (json) h['Content-Type'] = 'application/json'
     if (token) h['Authorization'] = `Bearer ${token}`
     return h
-  }
+  }, [token])
 
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(async (f?: StatsFilter) => {
+    const filter = f ?? statsFilter
     setStatsLoading(true)
     try {
-      const r = await fetch(`${API_BASE}/api/feedback/stats`, { headers: authHeaders(false) })
+      const params = new URLSearchParams()
+      if (filter.status) params.set('status', filter.status)
+      if (filter.perihal.trim()) params.set('perihal', filter.perihal.trim())
+      const qs = params.toString()
+      const r = await fetch(`${API_BASE}/api/feedback/stats${qs ? `?${qs}` : ''}`, { headers: authHeaders(false) })
       if (r.ok) setStats(await r.json())
       else if (r.status === 401) logout() // sesi kedaluwarsa → layar login
     } catch { /* server offline */ }
     setStatsLoading(false)
-  }, [API_BASE, token, logout])
+  }, [API_BASE, logout, statsFilter, authHeaders])
+
+  const applyStatsFilter = (f: StatsFilter) => {
+    setStatsFilter(f)
+    fetchStats(f)
+  }
+
+  const clearStatsFilter = () => applyStatsFilter({ status: '', perihal: '' })
+
+  // Sinkronkan status admin dari server (untuk tombol hapus feedback)
+  useEffect(() => {
+    if (!token) return
+    fetch(`${API_BASE}/api/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => (r.ok ? r.json() : null))
+      .then((u: (AuthUser & { is_admin?: boolean }) | null) => {
+        if (u) {
+          localStorage.setItem('kk_is_admin', String(!!u.is_admin))
+          setIsAdmin(!!u.is_admin)
+        }
+      })
+      .catch(() => {})
+  }, [token, API_BASE])
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || !deletePassword.trim()) return
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      const r = await fetch(`${API_BASE}/api/feedback/${deleteTarget.id}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+        body: JSON.stringify({ password: deletePassword })
+      })
+      if (r.ok) {
+        setDeleteTarget(null)
+        setDeletePassword('')
+        fetchStats()
+      } else {
+        const err = await r.json().catch(() => null) as ErrorResponse | null
+        if (r.status === 401) {
+          logout()
+          setDeleteTarget(null)
+          return
+        }
+        setDeleteError(err?.error || `Gagal menghapus (HTTP ${r.status})`)
+      }
+    } catch {
+      setDeleteError('Gagal terhubung ke server')
+    }
+    setDeleting(false)
+  }
 
   const login = async () => {
     if (!authConfig?.enabled) return
@@ -445,7 +756,7 @@ function App() {
           kode_ai: msg.results[0].kode,
           feedback_type: 'positive',
           perihal: msg.perihal || '',
-          api_key: userApiKey.trim() || undefined
+          api_keys: userApiKeys.length ? userApiKeys : undefined
         })
       })
       if (!resp.ok) {
@@ -496,7 +807,7 @@ function App() {
           kode_koreksi: form.kode.trim(),
           alasan: form.alasan,
           perihal: msg.perihal || '',
-          api_key: userApiKey.trim() || undefined,
+          api_keys: userApiKeys.length ? userApiKeys : undefined,
           candidates: msg.results.slice(0, 3).map(r => ({ kode: r.kode, deskripsi: r.deskripsi, path: r.path }))
         })
       })
@@ -634,7 +945,7 @@ function App() {
       const resp = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ message: userMsg.content, api_key: userApiKey.trim() || undefined })
+        body: JSON.stringify({ message: userMsg.content, api_keys: userApiKeys.length ? userApiKeys : undefined })
       })
 
       if (resp.status === 429) {
@@ -796,6 +1107,19 @@ function App() {
             <span className="text-base">📊</span>
             <span className="hidden md:inline">Statistik</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setView('settings')}
+            title="Pengaturan"
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+              view === 'settings'
+                ? 'bg-violet-950/60 text-violet-300 border border-violet-800/50'
+                : 'text-gray-400 hover:bg-gray-900 hover:text-white border border-transparent'
+            }`}
+          >
+            <span className="text-base">⚙️</span>
+            <span className="hidden md:inline">Pengaturan</span>
+          </button>
         </nav>
 
         {/* Kuota, API key, pengguna */}
@@ -814,17 +1138,22 @@ function App() {
               📅 {quota.chat.rpd_used}/{quota.chat.rpd_limit} · ⚡ {quota.chat.rpm_used}/{quota.chat.rpm_limit}
             </div>
           )}
-          <input
-            type="password"
-            value={userApiKey}
-            onChange={(e) => {
-              setUserApiKey(e.target.value)
-              localStorage.setItem("gemini_api_key", e.target.value)
-            }}
-            placeholder="API Key Gemini (opsional)"
-            title="API Key Gemini milikmu — diprioritaskan di atas key server"
-            className="hidden md:block w-full text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-300 placeholder-gray-600 focus:outline-none focus:border-violet-500"
-          />
+          <button
+            type="button"
+            onClick={() => setView('settings')}
+            title="Kelola API Key Gemini (multi-key)"
+            className={`hidden md:flex w-full items-center gap-2 text-[11px] px-2.5 py-2 rounded-lg border transition-colors ${
+              userApiKeys.length > 0
+                ? 'border-violet-800/60 bg-violet-950/40 text-violet-300 hover:border-violet-600'
+                : 'border-dashed border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-500'
+            }`}
+          >
+            <span>🔑</span>
+            <span className="flex-1 text-left truncate">
+              {userApiKeys.length > 0 ? `${userApiKeys.length} API Key aktif` : 'Tambah API Key'}
+            </span>
+            <span>⚙️</span>
+          </button>
           {user && (
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 shrink-0 rounded-full bg-violet-600 flex items-center justify-center text-xs font-bold">
@@ -853,10 +1182,14 @@ function App() {
         <header className="shrink-0 px-5 py-3 bg-gray-950 border-b border-gray-800 flex items-center gap-3">
           <div className="flex flex-col gap-0.5 min-w-0">
             <h1 className="text-sm font-semibold text-white leading-tight">
-              {view === 'stats' ? '📊 Statistik Feedback' : '💬 Chat Asisten'}
+              {view === 'stats' ? '📊 Statistik Feedback' : view === 'settings' ? '⚙️ Pengaturan API Key' : '💬 Chat Asisten'}
             </h1>
             <span className="hidden sm:block text-[10px] text-gray-500">
-              {view === 'stats' ? 'Umpan balik pengguna terhadap hasil klasifikasi' : 'Cari kode klasifikasi arsip dengan AI'}
+              {view === 'stats'
+                ? 'Umpan balik pengguna terhadap hasil klasifikasi'
+                : view === 'settings'
+                  ? 'Kelola API Key Gemini — multi-key dengan rotasi otomatis'
+                  : 'Cari kode klasifikasi arsip dengan AI'}
             </span>
           </div>
           <div className="ml-auto flex items-center gap-2">
@@ -879,7 +1212,7 @@ function App() {
 
       {/* Chat selalu di-mount (hanya disembunyikan saat di Statistik) agar sesi,
           posisi scroll, dan form koreksi yang sedang terbuka tetap terjaga */}
-      <div className={`flex-1 flex flex-col min-h-0 ${view === 'stats' ? 'hidden' : ''}`}>
+      <div className={`flex-1 flex flex-col min-h-0 ${view === 'stats' || view === 'settings' ? 'hidden' : ''}`}>
       {/* Chat Area */}
       <main className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
         {messages.length === 0 && (
@@ -1178,7 +1511,84 @@ function App() {
           stats={stats}
           loading={statsLoading}
           onRefresh={fetchStats}
+          filter={statsFilter}
+          onApplyFilter={applyStatsFilter}
+          onClearFilter={clearStatsFilter}
+          canDelete={isAdmin}
+          onDeleteClick={(r) => { setDeleteTarget(r); setDeletePassword(''); setDeleteError(null) }}
         />
+      )}
+
+      {view === 'settings' && (
+        <ApiKeySettings
+          keys={userApiKeys}
+          onSave={saveKeys}
+        />
+      )}
+
+      {/* Modal hapus feedback (admin + password secret) */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-gray-700 bg-gray-900 p-5 space-y-4 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-white">Hapus Feedback #{deleteTarget.id}</h3>
+                <p className="text-xs text-gray-500 mt-0.5 truncate">
+                  {deleteTarget.perihal || deleteTarget.naskah || '—'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="shrink-0 p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-gray-800 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="rounded-lg border border-red-900/60 bg-red-950/30 px-3 py-2 text-xs text-red-300">
+              ⚠️ Tindakan ini permanen dan tidak dapat dibatalkan. Hanya admin yang dapat menghapus, dengan memasukkan password secret server.
+            </div>
+
+            <div>
+              <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Password secret (DELETE_SECRET)</label>
+              <input
+                type="password"
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && deletePassword.trim() && !deleting) confirmDelete() }}
+                placeholder="Masukkan password admin..."
+                autoFocus
+                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500"
+              />
+            </div>
+
+            {deleteError && (
+              <div className="text-xs text-red-400">{deleteError}</div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
+                className="text-xs px-4 py-2 rounded-lg text-gray-400 hover:text-white transition-colors disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={!deletePassword.trim() || deleting}
+                className="text-xs px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 transition-colors"
+              >
+                {deleting ? 'Menghapus...' : '🗑 Hapus'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       </div>
     </div>
