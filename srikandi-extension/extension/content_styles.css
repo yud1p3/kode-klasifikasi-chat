@@ -1,0 +1,784 @@
+/* ── Styles for SRIKANDI AI Analysis Extension ──────────────── */
+
+#srikandi-ai-analisa-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 10px 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+  z-index: 9999;
+}
+
+#srikandi-ai-analisa-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.5);
+}
+
+#srikandi-ai-analisa-btn:active {
+  transform: translateY(0);
+}
+
+.srikandi-ai-icon {
+  font-size: 16px;
+}
+
+/* ── Modal Overlay ──────────────────────────────────────────── */
+
+.srikandi-ai-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 99999;
+  animation: srikandi-ai-fadein 0.2s ease;
+}
+
+@keyframes srikandi-ai-fadein {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.srikandi-ai-modal {
+  background: #fff;
+  border-radius: 12px;
+  width: 520px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: srikandi-ai-slideup 0.25s ease;
+}
+
+@keyframes srikandi-ai-slideup {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.srikandi-ai-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 0;
+}
+
+.srikandi-ai-modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1a1a2e;
+}
+
+.srikandi-ai-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #999;
+  padding: 0;
+  line-height: 1;
+}
+
+.srikandi-ai-close:hover {
+  color: #333;
+}
+
+/* ── New Field Styles ─────────────────────────────────────────── */
+
+.sk-field {
+  margin-bottom: 14px;
+}
+
+.sk-field-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #888;
+  margin-bottom: 3px;
+  letter-spacing: 0.3px;
+}
+
+.sk-field-value {
+  font-size: 14px;
+  color: #333;
+  line-height: 1.5;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.sk-field-value-ml {
+  white-space: pre-wrap;
+  min-height: 40px;
+}
+
+.sk-field-code {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sk-badge-fungsi {
+  background: #eef2ff;
+  color: #4f46e5;
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 2px 10px;
+  border-radius: 4px;
+  border: 1px solid #c7d2fe;
+}
+
+/* ── Subklasifikasi Numbered List ───────────────────────────────── */
+
+.sk-numlist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sk-numitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: default;
+  background: #fafbfc;
+}
+
+.sk-numitem-active {
+  border-color: #667eea;
+  background: #eef2ff;
+}
+
+.sk-num {
+  font-weight: 700;
+  color: #999;
+  min-width: 20px;
+  font-size: 12px;
+}
+
+.sk-numkode {
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  font-size: 12px;
+  color: #4f46e5;
+  white-space: nowrap;
+  min-width: 90px;
+}
+
+.sk-numdesc {
+  color: #555;
+  font-size: 12px;
+}
+
+/* ── Feedback Box ──────────────────────────────────────────────── */
+
+.sk-feedback-box {
+  background: #fafafa;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.sk-fb-radio-group {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.sk-fb-radio {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: #555;
+  padding: 6px 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  transition: all 0.15s;
+  background: #fff;
+  flex: 1;
+  justify-content: center;
+}
+
+.sk-fb-radio:hover {
+  border-color: #667eea;
+}
+
+.sk-fb-radio input[type="radio"] {
+  accent-color: #667eea;
+  margin: 0;
+}
+
+.sk-fb-radio:has(input:checked) {
+  border-color: #667eea;
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+.sk-fb-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sk-fb-panel {
+  margin-bottom: 8px;
+}
+
+.sk-fb-select {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #333;
+  outline: none;
+  cursor: pointer;
+}
+
+.sk-fb-select:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.15);
+}
+
+.sk-ac-wrap {
+  position: relative;
+}
+
+.sk-fb-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  outline: none;
+  box-sizing: border-box;
+  font-family: 'Courier New', monospace;
+}
+
+.sk-fb-input:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.15);
+}
+
+.sk-ac-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.sk-ac-item {
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.sk-ac-item:last-child {
+  border-bottom: none;
+}
+
+.sk-ac-item:hover,
+.sk-ac-highlighted {
+  background: #eef2ff;
+}
+
+.sk-ac-kode {
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  color: #4f46e5;
+  white-space: nowrap;
+  min-width: 80px;
+}
+
+.sk-ac-desc {
+  color: #555;
+}
+
+.sk-fb-selected {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.sk-fb-selected-badge {
+  font-weight: 600;
+  color: #059669;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.sk-fb-selected-kode {
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  color: #065f46;
+}
+
+.sk-fb-selected-desc {
+  color: #065f46;
+}
+
+/* ── User Identity ─────────────────────────────────────────────── */
+
+.sk-fb-user {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #888;
+}
+
+.sk-fb-user-icon {
+  font-size: 14px;
+}
+
+.sk-fb-user-val {
+  color: #555;
+  font-weight: 600;
+}
+
+.sk-fb-input-user {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+/* ── Feedback Status ───────────────────────────────────────────── */
+
+.sk-fb-status {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.sk-fb-msg-sending {
+  color: #667eea;
+}
+
+.sk-fb-msg-success {
+  color: #059669;
+  font-weight: 600;
+}
+
+.sk-fb-msg-error {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.sk-fb-msg-info {
+  color: #888;
+}
+
+.srikandi-ai-modal-body {
+  padding: 20px 24px;
+}
+
+.srikandi-ai-field {
+  margin-bottom: 16px;
+}
+
+.srikandi-ai-field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #888;
+  margin-bottom: 4px;
+  letter-spacing: 0.5px;
+}
+
+.srikandi-ai-value {
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: #333;
+  line-height: 1.5;
+}
+
+.srikandi-ai-value-multiline {
+  white-space: pre-wrap;
+  min-height: 60px;
+}
+
+.srikandi-ai-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 24px 20px;
+  border-top: 1px solid #eee;
+}
+
+.srikandi-ai-btn {
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s ease;
+}
+
+.srikandi-ai-btn-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+}
+
+.srikandi-ai-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.5);
+}
+
+.srikandi-ai-btn-secondary {
+  background: #f0f0f0;
+  color: #555;
+}
+
+.srikandi-ai-btn-secondary:hover {
+  background: #e0e0e0;
+}
+
+/* ── Loading Spinner ──────────────────────────────────────────── */
+
+.srikandi-ai-spinner {
+  display: inline-block;
+  width: 40px;
+  height: 40px;
+  border: 4px solid #e9ecef;
+  border-top: 4px solid #667eea;
+  border-radius: 50%;
+  animation: srikandi-ai-spin 0.8s linear infinite;
+}
+
+@keyframes srikandi-ai-spin {
+  to { transform: rotate(360deg); }
+}
+
+.srikandi-ai-modal-loading {
+  width: 300px;
+}
+
+/* ── Sub-Klasifikasi List ───────────────────────────────────── */
+
+.sk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sk-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.sk-item:hover {
+  border-color: #667eea;
+  background: #f5f3ff;
+}
+
+.sk-item-selected {
+  border-color: #667eea;
+  background: #eef2ff;
+  box-shadow: 0 0 0 1px #667eea;
+}
+
+.sk-item input[type="radio"] {
+  margin-top: 2px;
+  accent-color: #667eea;
+}
+
+.sk-kode {
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  font-size: 12px;
+  color: #4f46e5;
+  white-space: nowrap;
+  min-width: 80px;
+}
+
+.sk-desc {
+  color: #555;
+  font-size: 12px;
+}
+
+/* ── Feedback Area ───────────────────────────────────────────── */
+
+.feedback-area {
+  background: #fafafa;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.feedback-hint {
+  font-size: 11px;
+  color: #888;
+  margin: 0 0 10px;
+  line-height: 1.4;
+}
+
+.feedback-options {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.feedback-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: #fff;
+  color: #555;
+}
+
+.feedback-btn:hover {
+  border-color: #667eea;
+  background: #f5f3ff;
+}
+
+.feedback-btn-active {
+  border-color: #667eea;
+  background: #eef2ff;
+  color: #4f46e5;
+  box-shadow: 0 0 0 1px #667eea;
+}
+
+.feedback-btn-setuju.feedback-btn-active {
+  border-color: #059669;
+  background: #ecfdf5;
+  color: #059669;
+  box-shadow: 0 0 0 1px #059669;
+}
+
+.feedback-btn-koreksi.feedback-btn-active {
+  border-color: #d97706;
+  background: #fffbeb;
+  color: #d97706;
+  box-shadow: 0 0 0 1px #d97706;
+}
+
+.feedback-btn-submit {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  border: none;
+  box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4);
+  margin-top: 8px;
+}
+
+.feedback-btn-submit:hover {
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.5);
+}
+
+.fb-koreksi-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.fb-input {
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.fb-input:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.15);
+}
+
+.fb-user-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.fb-user-label {
+  font-size: 12px;
+  color: #666;
+  white-space: nowrap;
+}
+
+.fb-user-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 4px;
+  padding: 4px 8px;
+  flex: 1;
+}
+
+.fb-input-user {
+  flex: 1;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 12px;
+}
+
+.fb-status {
+  font-size: 12px;
+  margin-top: 4px;
+  min-height: 20px;
+}
+
+.fb-msg-sending {
+  color: #2563eb;
+}
+
+.fb-msg-success {
+  color: #059669;
+  font-weight: 600;
+}
+
+.fb-msg-error {
+  color: #dc2626;
+}
+
+.fb-msg-info {
+  color: #888;
+}
+
+/* ── Autocomplete Dropdown ───────────────────────────────────── */
+
+.fb-autocomplete-wrap {
+  position: relative;
+}
+
+.fb-input-kode {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.fb-ac-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 999999;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+}
+
+.fb-ac-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid #f3f4f6;
+  transition: background 0.1s;
+}
+
+.fb-ac-item:last-child {
+  border-bottom: none;
+}
+
+.fb-ac-item:hover {
+  background: #eef2ff;
+}
+
+.fb-ac-highlighted {
+  background: #e0e7ff !important;
+  outline: none;
+}
+
+.fb-ac-kode {
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  font-size: 11px;
+  color: #4f46e5;
+  white-space: nowrap;
+  min-width: 75px;
+}
+
+.fb-ac-desc {
+  font-size: 11px;
+  color: #555;
+  line-height: 1.3;
+}
+
+.fb-ac-empty {
+  padding: 10px;
+  text-align: center;
+  font-size: 11px;
+  color: #999;
+}
+
+/* Panel koreksi — diarahkan ke aplikasi web (butuh login) */
+.sk-fb-koreksi-info {
+  font-size: 12px;
+  color: #8a6d3b;
+  background: #fffbe6;
+  border: 1px solid #f0df9f;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0 0 10px;
+  line-height: 1.5;
+}

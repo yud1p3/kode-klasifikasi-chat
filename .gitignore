@@ -17,3 +17,6 @@ backend/.env.vps
 
 # Backup file lama
 *.old
+
+# Kunci privat extension SRIKANDI — JANGAN di-commit (hanya kunci publik di manifest)
+srikandi-extension/keys/

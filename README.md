@@ -9,6 +9,7 @@ Asisten AI berbasis **Rust + React + TypeScript** untuk mencari kode klasifikasi
 - **Pencarian Semantic** — Embedding 768 dimensi via Gemini `gemini-embedding-2` + pgvector cosine similarity
 - **Penjelasan AI** — Gemini memilih kode terbaik dari top-10 hasil, merangking ulang, dan menjelaskan alasannya
 - **Upload File PDF/DOCX** — Ekstrak teks langsung dari file: PDF via poppler (`pdftotext`) dengan fallback pdf.js, DOCX via mammoth
+- **Chrome Extension SRIKANDI** — Ekstensi MV3 (`srikandi-extension/`) untuk menganalisa naskah langsung di halaman SRIKANDI: inject tombol "Analisa dengan AI", baca file DOCX/PDF, tampilkan hasil (perihal, penjelasan AI, kode klasifikasi), isi form otomatis, dan feedback 👍 anonim — memakai API repo ini (lihat `srikandi-extension/README.md`)
 - **Pemilihan Fungsi/Urusan** — Untuk setiap naskah (pendek maupun panjang), Gemini memilih salah satu dari Fungsi/Urusan induk (dibaca langsung dari database) + perihal inti yang dibersihkan dari nama orang, tempat/wilayah, dan keterangan waktu, lalu query embedding disusun sebagai `"FUNGSI > perihal"` agar hasil pencarian lebih akurat
 - **Tanpa Login untuk Chat & Feedback Positif** — chat dan konfirmasi 👍 bisa dipakai tanpa akun Google; feedback positif dicatat **anonim** bila tidak login (identitas ikut tercatat bila sedang login). Login bersifat **opsional** — hanya wajib untuk mengirim **koreksi kode klasifikasi** dan menghapus feedback (admin)
 - **Sesi Anonim (chat_id)** — setiap browser punya ID sesi acak (localStorage, UUID v4) yang dikirim bersama feedback; feedback anonim tetap bisa dikelompokkan per sesi chat untuk analisis. ID ini hanya angka acak di browser (bukan data perangkat/fingerprint teknis)
@@ -160,6 +161,14 @@ Response:
 
 `perihal` berisi perihal naskah hasil ekstraksi Gemini (untuk ditampilkan di UI dan disimpan bersama feedback).
 
+Request juga bisa meminta **ringkasan naskah (isi ringkas)** — khusus Chrome extension SRIKANDI (versi web tidak memakai):
+
+```json
+{"message": "Permohonan cuti tahunan pegawai", "include_ringkasan": true}
+```
+
+Dengan `include_ringkasan: true`, respons menyertakan field opsional `ringkasan` (ringkasan isi dokumen dalam 2-3 kalimat). Tanpa opsi ini (perilaku default / web), field `ringkasan` tidak muncul — respons identik seperti sebelumnya.
+
 Request bisa menyertakan key pengguna (multi-key, rotasi otomatis):
 
 ```json
@@ -177,6 +186,20 @@ Menerima multipart `file` (PDF), mengembalikan:
 ```
 
 Dipakai frontend sebagai jalur utama ekstraksi PDF karena menangani PDF SRIKANDI dengan tabel ToUnicode rusak (pdf.js menghasilkan karakter garbled, poppler membaca benar).
+
+---
+
+## Chrome Extension — SRIKANDI
+
+Tersedia juga **Chrome Extension** (MV3, vanilla JS) di folder [`srikandi-extension/`](srikandi-extension/) — versi "scraper" untuk aplikasi SRIKANDI (`srikandi.arsip.go.id`) dengan tujuan sama: analisa naskah (PDF/DOCX) → perihal, penjelasan AI, kode klasifikasi, dan isi form SRIKANDI otomatis.
+
+- Memakai API repo ini secara langsung: `POST /api/chat` (sinkron, dengan `include_ringkasan:true` untuk isi ringkas), `POST /api/extract-pdf`, `GET /api/codes`, `POST /api/feedback`
+- Chat & feedback 👍 **tanpa login** (anonim + `chat_id`); login Google & koreksi ✏️ diarahkan ke aplikasi web
+- **Isi ringkas hanya untuk extension** — extension mengirim `include_ringkasan:true`; versi web tidak, sehingga tidak ada perubahan perilaku web
+- Default API URL: `http://localhost:3100` (bisa diubah di Pengaturan popup)
+- DOCX diekstrak client-side (mammoth); PDF diekstrak backend (poppler)
+
+Panduan lengkap: [`srikandi-extension/README.md`](srikandi-extension/README.md)
 
 ---
 

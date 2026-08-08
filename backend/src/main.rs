@@ -30,6 +30,10 @@ struct ChatRequest {
     /// sebelum fallback ke key server. `api_key` tunggal tetap didukung sebagai kompatibilitas.
     #[serde(default)]
     api_keys: Option<Vec<String>>,
+    /// Minta ringkasan naskah (isi ringkas) — HANYA dipakai Chrome extension SRIKANDI.
+    /// Versi web tidak mengirim ini sehingga respons tetap tanpa `ringkasan` (perilaku tidak berubah).
+    #[serde(default)]
+    include_ringkasan: bool,
 }
 
 /// Gabungan key pengguna (api_key legacy + api_keys), urut, deduplikasi, tanpa kosong.
@@ -72,6 +76,9 @@ struct ChatResponse {
     results: Vec<ClassificationResult>,
     perihal: String,
     explanation: String,
+    /// Ringkasan naskah (isi ringkas) — opsional; hanya muncul bila diminta (include_ringkasan=true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ringkasan: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -346,14 +353,16 @@ async fn chat(
         }
     };
 
-    let (reranked, explanation, perihal_rerank) = match state.key_rotator.try_all_prefer(&keys, |key| {
+    // Ringkasan (isi ringkas) hanya diminta oleh Chrome extension SRIKANDI
+    let need_ring = body.include_ringkasan;
+    let (reranked, explanation, perihal_rerank, ringkasan) = match state.key_rotator.try_all_prefer(&keys, |key| {
         let msg = message.to_string();
         let fs = fewshot_text.clone();
         let res = results.clone();
         // Perihal tampilan (perihal_lengkap) diteruskan agar penjelasan
         // "Perihal: X" konsisten dengan yang ditampilkan di UI.
         let ph = perihal_lengkap.clone();
-        async move { gemini::rerank_and_explain(&key, &msg, &fs, &ph, &res).await }
+        async move { gemini::rerank_and_explain(&key, &msg, &fs, &ph, need_ring, &res).await }
     }).await {
         Ok((result, _used_key)) => {
             state.quota.record_chat(1);
@@ -372,6 +381,7 @@ async fn chat(
                 results.clone(),
                 format!("\u{26a0}\u{fe0f} Gemini tidak dapat melakukan reranking: {}. Hasil diurutkan berdasarkan similarity semantic.{}", err_str, cooldown_note),
                 String::new(),
+                String::new(),
             )
         }
     };
@@ -389,7 +399,14 @@ async fn chat(
         explanation
     };
 
-    HttpResponse::Ok().json(ChatResponse { results: reranked, perihal, explanation })
+    // Ringkasan opsional: None bila kosong (biar respons web tidak berubah)
+    let ringkasan = if ringkasan.trim().is_empty() {
+        None
+    } else {
+        Some(ringkasan.trim().to_string())
+    };
+
+    HttpResponse::Ok().json(ChatResponse { results: reranked, perihal, explanation, ringkasan })
 }
 
 

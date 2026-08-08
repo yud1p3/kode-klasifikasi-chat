@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Analisa Naskah SRIKANDI</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <div class="popup-header">
+      <h1>🔍 Analisa Naskah</h1>
+      <div class="header-actions">
+        <span class="badge" id="status-badge">Siap</span>
+        <button id="btn-settings" class="icon-btn" title="Pengaturan">⚙️</button>
+      </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div id="settings-panel" class="settings-panel" style="display:none">
+      <!-- Tabs: Pengaturan | Riwayat Feedback -->
+      <div class="settings-tabs">
+        <button class="settings-tab active" data-tab="settings-tab-content">⚙️ Pengaturan</button>
+        <button class="settings-tab" data-tab="feedback-tab-content">📋 Riwayat Feedback</button>
+      </div>
+
+      <!-- Tab: Pengaturan -->
+      <div id="settings-tab-content" class="tab-content">
+      <div class="settings-section">
+        <label class="settings-label">🔑 Gemini API Keys</label>
+        <p class="settings-hint">
+          Opsional. 1 key per baris — jika quota key pertama habis,
+          akan otomatis fallback ke key berikutnya.
+        </p>
+        <div class="api-key-input-wrap">
+          <textarea
+            id="input-api-keys"
+            class="api-key-textarea"
+            placeholder="AIzaSyA...&#10;AIzaSyB...&#10;AIzaSyC..."
+            spellcheck="false"
+            rows="3"
+          ></textarea>
+          <button id="btn-toggle-key-visibility" class="icon-btn-sm" title="Tampilkan/Sembunyikan key">👁️</button>
+        </div>
+        <div class="settings-actions">
+          <span id="api-key-status" class="api-key-status"></span>
+          <button id="btn-save-key" class="btn btn-primary btn-sm">Simpan</button>
+          <button id="btn-clear-key" class="btn btn-secondary btn-sm">Hapus</button>
+        </div>
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-section">
+        <label class="settings-label">🌐 Server API</label>
+        <p class="settings-hint">
+          URL API backend Kode Klasifikasi (kode-klasifikasi-chat). Default: <code>http://localhost:3100</code>
+        </p>
+        <input
+          type="url"
+          id="input-api-url"
+          class="settings-input"
+          placeholder="http://localhost:3100"
+          spellcheck="false"
+        />
+        <div class="settings-actions">
+          <span id="api-url-status" class="api-key-status"></span>
+          <button id="btn-save-url" class="btn btn-primary btn-sm">Simpan</button>
+          <button id="btn-reset-url" class="btn btn-secondary btn-sm">Reset</button>
+        </div>
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-section">
+        <label class="settings-label">👤 Akun Google</label>
+        <div id="login-section">
+          <div id="login-user-info" class="login-user-info" style="display:none">
+            <span id="login-user-name" class="login-name"></span>
+            <span id="login-user-email" class="login-email"></span>
+            <button id="btn-logout-google" class="btn btn-secondary btn-sm">Logout</button>
+          </div>
+          <div id="login-not-logged-in">
+            <p class="settings-hint">Login Google diperlukan untuk mengirim <strong>✏️ Koreksi</strong> kode klasifikasi.</p>
+            <button id="btn-login-google" class="btn btn-primary btn-sm">🔑 Login dengan Google</button>
+          </div>
+        </div>
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-section">
+        <label class="settings-label">🌐 Aplikasi Web</label>
+        <p class="settings-hint">
+          Alternatif: buka aplikasi web Kode Klasifikasi (chat, statistik, kelola feedback).
+        </p>
+        <div class="settings-actions">
+          <button id="btn-buka-web-app" class="btn btn-primary btn-sm">🌐 Buka Aplikasi Web</button>
+        </div>
+      </div>
+      <div class="settings-divider"></div>
+      </div>
+      <!-- /settings-tab-content -->
+
+      <!-- Tab: Riwayat Feedback -->
+      <div id="feedback-tab-content" class="tab-content" style="display:none">
+        <div id="fb-list-container">
+          <div class="fb-list-placeholder">Memuat data...</div>
+        </div>
+      </div><!-- /feedback-tab-content -->
+    </div>
+
+    <!-- Status / Idle -->
+    <div id="view-idle" class="view">
+      <p class="info-text">
+        Buka halaman <strong>Registrasi Naskah Keluar</strong> di SRIKANDI,
+        upload file DOCX, lalu klik tombol <strong>"Analisa dengan AI"</strong>
+        yang muncul di halaman.
+      </p>
+    </div>
+
+    <!-- Footer -->
+    <div class="popup-footer">
+      <button id="btn-buka-srikandi" class="btn btn-secondary">
+        Buka SRIKANDI
+      </button>
+      <button id="btn-open-web" class="btn btn-primary">
+        🌐 Buka Aplikasi Web
+      </button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Analisa Naskah SRIKANDI",
+  "version": "1.2.0",
+  "description": "Analisa naskah otomatis dengan AI — perihal, isi ringkas, penjelasan AI, & kode klasifikasi arsip (backend Kode Klasifikasi)",
+  "permissions": ["storage", "activeTab", "identity"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3oDaBL0i/yKIfsWdz8bVCcK5BoRgk0cPOdAltBod40nUEwinFkC2aI2NmeVf/s9+/CyLmheabHwY0Zrq1FzRqlZNBMACSK431fu3rXrGhiXh3T/ohhotOZdOEQnn27m8FjxGW5CyWZAj/ze2KsrQJMGip6QdNQxMu47Z4aKJ9IZyKdkLKi5tbwD4CbCTFxSi5s0ykypRsuO7+v7sX4Q0Ey2H60uZWUTiJ6wPLJ4+oE6ose45JEQhfW+AkKAtU/agj9k6ToAjnJx4Z3srZy56ABEPN0GtdKaYf+NWqS0/vPlieRYrTvnEq/hVBh6df6ZZ1uixqke6xlmg4PKaoN2tnwIDAQAB",
+  "host_permissions": [
+    "https://srikandi.arsip.go.id/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://srikandi.arsip.go.id/*"],
+      "js": ["vendor/mammoth.browser.min.js", "content_script.js"],
+      "css": ["content_styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Analisa Naskah SRIKANDI",
+    "default_icon": {
+      "16": "icons/icon16.svg",
+      "48": "icons/icon48.svg",
+      "128": "icons/icon128.svg"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.svg",
+    "48": "icons/icon48.svg",
+    "128": "icons/icon128.svg"
+  }
+}

@@ -134,10 +134,11 @@ pub async fn rerank_and_explain(
     message: &str,
     fewshot: &str,
     perihal_hint: &str,
+    need_ringkasan: bool,
     results: &[super::ClassificationResult],
-) -> anyhow::Result<(Vec<super::ClassificationResult>, String, String)> {
+) -> anyhow::Result<(Vec<super::ClassificationResult>, String, String, String)> {
     if results.is_empty() {
-        return Ok((vec![], "Tidak ada hasil yang cocok.".into(), String::new()));
+        return Ok((vec![], "Tidak ada hasil yang cocok.".into(), String::new(), String::new()));
     }
 
     let client = reqwest::Client::new();
@@ -169,6 +170,20 @@ pub async fn rerank_and_explain(
         format!("===== PERIHAL NASKAH (hasil ekstraksi awal) =====\n{}\n\n", perihal_hint)
     };
 
+    // Instruksi ringkasan naskah (isi ringkas) — HANYA bila diminta.
+    // Dipakai Chrome extension SRIKANDI; versi web tidak meminta sehingga
+    // tidak ada biaya kuota/latensi tambahan (tetap 1 panggilan Gemini yang sama).
+    let ringkasan_inst = if need_ringkasan {
+        "LANGKAH 4 - RINGKAS NASKAH: Tulis \"isi ringkas\" naskah (ringkasan isi dokumen) dalam 2-3 kalimat padat, fokus substansi masalah & keputusan penting. PERTAHANKAN keterangan nama orang, tempat, dan waktu sebagaimana tertulis di naskah.\n"
+    } else {
+        ""
+    };
+    let ringkasan_schema = if need_ringkasan {
+        ",\"ringkasan\":\"...\""
+    } else {
+        ""
+    };
+
     let prompt = format!(
         "Kamu adalah AI Arsiparis. Di bawah ini adalah teks naskah dinas (bisa teks lengkap\n\
          dokumen, atau perihal singkat).\n\n\
@@ -178,7 +193,7 @@ pub async fn rerank_and_explain(
          {}\n\n\
          {}\
          {}\
-         TUGAS KAMU (3 langkah berurutan):\n\n\
+         TUGAS KAMU (langkah berurutan):\n\n\
          LANGKAH 1 - TETAPKAN PERIHAL: Pakai PERIHAL NASKAH dari bagian ===== PERIHAL\n\
          NASKAH ===== di atas bila terisi (jangan ekstrak ulang). Bila kosong, cari baris\n\
          Perihal: / Hal: atau simpulkan dari isi dokumen. Hasilnya PERIHAL NASKAH\n\
@@ -196,9 +211,10 @@ pub async fn rerank_and_explain(
          <alasan> = 2-3 kalimat fokus kecocokan isi naskah dengan kode/deskripsi terpilih,\n\
          dalam bahasa yang mudah dimengerti pengelola arsip.\n\
          JANGAN menyebut aturan \"spesifisitas path\", \"prefix\", atau aturan teknis pengurutan.\n\n\
+         {}\
          Keluarkan HANYA JSON valid (tanpa markdown code block):\n\
-         {{\"perihal\":\"...\",\"reranked\":[{{\"rank\":1,\"kode\":\"XXX.XX\"}}],\"explanation\":\"...\"}}",
-        message, candidates, fewshot_section, perihal_hint_section
+         {{\"perihal\":\"...\",\"reranked\":[{{\"rank\":1,\"kode\":\"XXX.XX\"}}],\"explanation\":\"...\"{}}}",
+        message, candidates, fewshot_section, perihal_hint_section, ringkasan_inst, ringkasan_schema
     );
 
     let body = serde_json::json!({
@@ -234,6 +250,11 @@ pub async fn rerank_and_explain(
         .map(str::to_string)
         .unwrap_or_default();
 
+    let mut ringkasan = parsed["ringkasan"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_default();
+
     let mut rank_map: HashMap<String, usize> = HashMap::new();
     if let Some(arr) = parsed["reranked"].as_array() {
         for (i, item) in arr.iter().enumerate() {
@@ -249,6 +270,7 @@ pub async fn rerank_and_explain(
         let (p, e, kodes) = extract_fields_tolerant(cleaned);
         if perihal.is_empty() { perihal = p; }
         if explanation_raw.is_empty() { explanation_raw = e; }
+        if ringkasan.is_empty() { ringkasan = grab_field(cleaned, "ringkasan"); }
         if rank_map.is_empty() {
             for (i, k) in kodes.into_iter().enumerate() {
                 rank_map.entry(k).or_insert(i);
@@ -286,5 +308,5 @@ pub async fn rerank_and_explain(
         }
     }
 
-    Ok((reranked, explanation, perihal))
+    Ok((reranked, explanation, perihal, ringkasan))
 }
