@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================
-#  Start/Stop Aplikasi Kode Klasifikasi — versi Meilisearch
-#  Backend :3100 (search via Meilisearch) + Frontend :5174
+#  Start/Stop Aplikasi Kode Klasifikasi
+#  Backend :3100 (search via PostgreSQL pgvector) + Frontend :5174
 #  Dipakai: bash start-meili-app.sh [start|stop|status|restart]
+#  Catatan: nama script dipertahankan dari project (kode-klasifikasi-meili).
 # ============================================================
 set -euo pipefail
 
@@ -41,7 +42,7 @@ stop_one() {
 }
 
 start() {
-  echo "== Memulai aplikasi Meilisearch =="
+  echo "== Memulai aplikasi (PostgreSQL pgvector) =="
   start_one "backend :3100" "$DIR/backend" "./target/debug/kode-klasifikasi-chat" "$BACKEND_LOG" "$BACKEND_PID"
   start_one "frontend :5174" "$DIR/frontend" "env VITE_API_URL=http://localhost:3100 ./node_modules/.bin/vite --port 5174 --strictPort" "$FRONTEND_LOG" "$FRONTEND_PID"
   sleep 4
@@ -56,9 +57,8 @@ stop() {
 
 status() {
   echo "== Status =="
-  curl -s -m 3 http://localhost:3100/api/health >/dev/null 2>&1 && echo "✅ backend     : http://localhost:3100 (Meilisearch)" || echo "❌ backend     : :3100 tidak merespon"
+  curl -s -m 3 http://localhost:3100/api/health >/dev/null 2>&1 && echo "✅ backend     : http://localhost:3100 (pgvector)" || echo "❌ backend     : :3100 tidak merespon"
   curl -s -m 3 http://localhost:5174 >/dev/null 2>&1 && echo "✅ frontend    : http://localhost:5174" || echo "❌ frontend    : :5174 tidak merespon"
-  curl -s -m 3 http://localhost:7700/health >/dev/null 2>&1 && echo "✅ meilisearch : http://localhost:7700" || echo "❌ meilisearch : :7700 tidak merespon"
 }
 
 case "${1:-start}" in

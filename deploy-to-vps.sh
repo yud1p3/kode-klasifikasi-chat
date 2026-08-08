@@ -9,8 +9,8 @@
 #   • nginx config            (/etc/nginx/sites-available/)
 #   • systemd unit            (/etc/systemd/system/)
 #
-# Catatan: database PostgreSQL & index Meilisearch di-migrasi
-# SATU KALI (lihat PANDUAN_DEPLOY_VPS.md §3 & §4) — script ini
+# Catatan: database PostgreSQL di-migrasi
+# SATU KALI (lihat PANDUAN_DEPLOY_VPS.md §3) — script ini
 # hanya untuk deploy/update aplikasi.
 #
 # Cara pakai:
@@ -20,13 +20,13 @@
 set -euo pipefail
 
 # ── KONFIGURASI VPS (SESUAIKAN) ─────────────────────────────
-VPS_USER="root"                            # user SSH VPS (root / siapdev / dsb)
-VPS_IP="203.0.113.10"                      # IP atau hostname VPS
-SSH_KEY="$HOME/.ssh/key-vps"               # SSH private key
+VPS_USER="siapdev"                          # user SSH VPS (root / siapdev / dsb)
+VPS_IP="192.168.181.6"                      # IP atau hostname VPS
+SSH_KEY="$HOME/siap_key.pem"                # SSH private key (sudah di ssh-agent)
 SSH_PORT="22"
-REMOTE_HOME="kode-klasifikasi-meili"       # folder app di $HOME VPS (nama bebas)
+REMOTE_HOME="apps/kode-klasifikasi-meili"   # folder app di $HOME VPS
 WEBROOT="/var/www/kode-klasifikasi-meili"
-BACKEND_PORT="3000"                        # port backend Rust di VPS (harus sama dgn nginx conf)
+BACKEND_PORT="3000"                         # port backend Rust di VPS (harus sama dgn nginx conf)
 # ────────────────────────────────────────────────────────────
 
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,7 +83,16 @@ echo
 echo "────────────────────────────────────────────────────────────"
 echo " [3/4] Sync binary + dist + config ke VPS ..."
 echo "────────────────────────────────────────────────────────────"
-ssh "${SSH_OPTS[@]}" "$VPS_USER@$VPS_IP" "mkdir -p ~/$REMOTE_HOME $WEBROOT"
+
+# Create app directory (no sudo needed)
+ssh "${SSH_OPTS[@]}" "$VPS_USER@$VPS_IP" "mkdir -p ~/$REMOTE_HOME" \
+    || { echo "❌ Gagal membuat ~/$REMOTE_HOME"; exit 1; }
+
+# Create webroot with sudo (try with sudo first, then handle no-password sudo)
+echo "   • Membuat webroot directory ($WEBROOT)..."
+ssh "${SSH_OPTS[@]}" "$VPS_USER@$VPS_IP" "sudo mkdir -p $WEBROOT && sudo chown $VPS_USER:$VPS_USER $WEBROOT" \
+    || ssh "${SSH_OPTS[@]}" "$VPS_USER@$VPS_IP" "sudo -S mkdir -p $WEBROOT && sudo -S chown $VPS_USER:$VPS_USER $WEBROOT" \
+    || { echo "⚠️  Perhatian: Tidak bisa membuat $WEBROOT dengan sudo. Pastikan siapdev bisa menggunakan sudo tanpa password untuk mkdir & chown, atau hubungi admin VPS."; exit 1; }
 
 echo "   • Backend binary → ~/$REMOTE_HOME/"
 rsync -avz $RSYNC_E \
@@ -121,9 +130,10 @@ echo
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║  ✅ DEPLOY SELESAI — LANGKAH DI VPS                       ║"
 echo "╚══════════════════════════════════════════════════════════╝"
-echo ""echo "1. Buat .env backend (template sudah terkirim, lihat PANDUAN_DEPLOY_VPS.md §5):"
-        echo "   cd ~/$REMOTE_HOME && cp .env.vps.example .env && nano .env"
-        echo "   # isi: MEILI_MASTER_KEY VPS, GOOGLE_REDIRECT_URI ngrok VPS, JWT_SECRET baru, dst"
+echo ""
+echo "1. Buat .env backend (template sudah terkirim, lihat PANDUAN_DEPLOY_VPS.md §5):"
+echo "   cd ~/$REMOTE_HOME && cp .env.vps.example .env && nano .env"
+echo "   # isi: DATABASE_URL VPS, GOOGLE_REDIRECT_URI ngrok VPS, JWT_SECRET baru, dst"
 echo ""
 echo "2. Aktifkan nginx + service:"
 echo "   sudo ln -sf /etc/nginx/sites-available/kode-klasifikasi-meili.conf /etc/nginx/sites-enabled/"

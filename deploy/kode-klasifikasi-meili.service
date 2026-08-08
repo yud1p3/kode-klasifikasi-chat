@@ -1,7 +1,7 @@
 [Unit]
-Description=Kode Klasifikasi Arsip — AI Chat (backend Rust + Meilisearch)
+Description=Kode Klasifikasi Arsip — AI Chat (backend Rust + PostgreSQL pgvector)
 Documentation=https://github.com/yud1p3/kode-klasifikasi-chat
-After=network-online.target meilisearch.service postgresql.service
+After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]

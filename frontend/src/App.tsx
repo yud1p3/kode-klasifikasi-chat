@@ -153,6 +153,37 @@ const EXAMPLE_QUERIES = [
   'Laporan keuangan triwulan III',
 ]
 
+// ---------- ID Sesi Chat (chat_id) ----------
+// ID unik per browser, dibuat sekali & disimpan di localStorage. Dikirim bersama
+// feedback agar feedback — termasuk yang ANONIM — tetap bisa dikaitkan ke sesi
+// chat yang sama (tanpa login & tanpa fingerprint teknis yang invasif).
+
+const CHAT_ID_STORAGE = 'kk_chat_id'
+
+function randomHex(len: number): string {
+  const arr = new Uint8Array(len)
+  crypto.getRandomValues(arr)
+  return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** Muat chat_id dari localStorage; buat & simpan bila belum ada (UUID v4-like). */
+function loadChatId(): string {
+  let id = localStorage.getItem(CHAT_ID_STORAGE)
+  if (!id) {
+    // crypto.getRandomValues tersedia di semua browser modern; fallback ringan
+    // untuk embedder eksotis yang tidak punya crypto sama sekali.
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      id = `${randomHex(8)}-${randomHex(4)}-4${randomHex(3)}-${['8', '9', 'a', 'b'][Math.floor(Math.random() * 4)]}${randomHex(3)}-${randomHex(12)}`
+    } else {
+      id = `anon-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    }
+    localStorage.setItem(CHAT_ID_STORAGE, id)
+  }
+  return id
+}
+
+const CHAT_ID = loadChatId()
+
 // ---------- Pengaturan API Key (multi-key, toggle lihat/sembunyikan) ----------
 
 const KEYS_STORAGE = 'gemini_api_keys'
@@ -690,11 +721,19 @@ function App() {
 
   const clearStatsFilter = () => applyStatsFilter({ status: '', perihal: '' })
 
-  // Sinkronkan status admin dari server (untuk tombol hapus feedback)
+  // Sinkronkan status admin dari server (untuk tombol hapus feedback).
+  // Bila token tidak valid/kedaluwarsa (401) → bersihkan sesi basi di localStorage
+  // agar UI jujur (chat tetap bisa dipakai tanpa login).
   useEffect(() => {
     if (!token) return
     fetch(`${API_BASE}/api/me`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => (r.ok ? r.json() : null))
+      .then(r => {
+        if (!r.ok) {
+          if (r.status === 401) logout()
+          return null
+        }
+        return r.json()
+      })
       .then((u: (AuthUser & { is_admin?: boolean }) | null) => {
         if (u) {
           localStorage.setItem('kk_is_admin', String(!!u.is_admin))
@@ -702,7 +741,7 @@ function App() {
         }
       })
       .catch(() => {})
-  }, [token, API_BASE])
+  }, [token, API_BASE, logout])
 
   const startDeleteLockout = useCallback((seconds: number) => {
     setDeleteLockout(seconds)
@@ -796,7 +835,8 @@ function App() {
           kode_ai: msg.results[0].kode,
           feedback_type: 'positive',
           perihal: msg.perihal || '',
-          api_keys: userApiKeys.length ? userApiKeys : undefined
+          api_keys: userApiKeys.length ? userApiKeys : undefined,
+          chat_id: CHAT_ID
         })
       })
       if (!resp.ok) {
@@ -835,6 +875,11 @@ function App() {
   const submitCorrection = async (msgIdx: number, msg: Message) => {
     const form = correctionForm[msgIdx]
     if (!form?.kode.trim() || !msg.query || !msg.results?.length) return
+    // Koreksi wajib login (akuntabilitas) — pengaman ganda selain validasi backend
+    if (!user && authConfig?.enabled) {
+      setFeedbackMap(prev => ({ ...prev, [msgIdx]: { type: 'correction', result: { valid: false, kode_terbaik: null, penjelasan: '🔐 Silakan login terlebih dahulu untuk mengirim koreksi.' } } }))
+      return
+    }
     setFeedbackMap(prev => ({ ...prev, [msgIdx]: { type: 'correction', sending: true } }))
     try {
       const resp = await fetch(`${API_BASE}/api/feedback`, {
@@ -848,7 +893,8 @@ function App() {
           alasan: form.alasan,
           perihal: msg.perihal || '',
           api_keys: userApiKeys.length ? userApiKeys : undefined,
-          candidates: msg.results.slice(0, 3).map(r => ({ kode: r.kode, deskripsi: r.deskripsi, path: r.path }))
+          candidates: msg.results.slice(0, 3).map(r => ({ kode: r.kode, deskripsi: r.deskripsi, path: r.path })),
+          chat_id: CHAT_ID
         })
       })
       if (!resp.ok) {
@@ -1079,32 +1125,8 @@ function App() {
 
   const isInputDisabled = loading || cooldown !== null
 
-  // Layar login (bila auth aktif & belum login)
-  if (authConfig?.enabled && !token) {
-    return (
-      <div className="flex flex-col items-center justify-center h-screen bg-gray-900 text-white px-6">
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 to-blue-600 flex items-center justify-center text-2xl font-bold mb-6">K</div>
-        <h1 className="text-2xl font-semibold mb-2">Kode Klasifikasi Arsip</h1>
-        <p className="text-sm text-gray-400 mb-8 text-center max-w-sm">
-          Masuk dengan akun Google untuk menggunakan asisten klasifikasi arsip dan memberikan feedback.
-        </p>
-        <button
-          onClick={login}
-          className="flex items-center gap-3 px-6 py-3 rounded-xl bg-white text-gray-800 font-medium hover:bg-gray-200 transition-colors shadow-lg"
-        >
-          <svg className="w-5 h-5" viewBox="0 0 24 24">
-            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z" />
-            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-            <path fill="#FBBC05" d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.18A10.96 10.96 0 0 0 1 12c0 1.77.43 3.45 1.18 4.94l3.66-2.84z" />
-            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-          </svg>
-          Masuk dengan Google
-        </button>
-        <p className="mt-6 text-xs text-gray-500">Identitas Anda dicatat untuk statistik feedback.</p>
-      </div>
-    )
-  }
-
+  // Chat & feedback positif terbuka untuk semua (tanpa login). Login bersifat
+  // OPSIONAL — dibutuhkan hanya untuk mengirim KOREKSI & menghapus feedback (admin).
   return (
     <div className="flex h-screen bg-gray-900">
       {/* Sidebar kiri: brand, menu, akun */}
@@ -1198,6 +1220,24 @@ function App() {
               </button>
             </div>
           )}
+
+          {/* Login OPSIONAL — dibutuhkan untuk kirim koreksi & hapus feedback (admin) */}
+          {!user && authConfig?.enabled && (
+            <button
+              onClick={login}
+              title="Masuk dengan Google (opsional)"
+              className="w-full flex items-center justify-center md:justify-start gap-2.5 px-2.5 py-2 rounded-lg border border-gray-700 text-gray-300 hover:text-white hover:border-violet-600 hover:bg-gray-900 transition-colors"
+            >
+              <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z" />
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                <path fill="#FBBC05" d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.18A10.96 10.96 0 0 0 1 12c0 1.77.43 3.45 1.18 4.94l3.66-2.84z" />
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+              </svg>
+              <span className="hidden md:inline text-xs font-medium">Masuk dengan Google</span>
+              <span className="hidden md:inline text-[10px] text-gray-500 ml-1">opsional</span>
+            </button>
+          )}
         </div>
       </aside>
 
@@ -1256,6 +1296,11 @@ function App() {
                 atau <strong className="text-gray-200">upload file</strong> PDF/DOCX,{' '}
                 dan AI akan mencari kode klasifikasi paling sesuai.
               </p>
+              {authConfig?.enabled && (
+                <p className="text-[10px] text-gray-600">
+                  Bisa dipakai tanpa login · 👍 feedback positif anonim · ✏️ koreksi butuh login
+                </p>
+              )}
             </div>
             <div className="w-full space-y-2">
               <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Contoh</p>
@@ -1373,7 +1418,7 @@ function App() {
               {/* Form koreksi */}
               {correctionForm[i]?.open && !feedbackMap[i]?.result && (
                 <div className="bg-gray-900 border border-amber-800/50 rounded-xl p-3 space-y-2">
-                  <p className="text-xs text-amber-300 font-medium">Koreksi kode klasifikasi (divalidasi AI sebelum dipakai)</p>
+                  <p className="text-xs text-amber-300 font-medium">Koreksi kode klasifikasi (divalidasi AI sebelum dipakai){authConfig?.enabled ? ' · butuh login' : ''}</p>
                   <div className="relative">
                     <input
                       value={correctionForm[i]?.kode || ''}
@@ -1425,14 +1470,24 @@ function App() {
                     >
                       Batal
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => submitCorrection(i, msg)}
-                      disabled={feedbackMap[i]?.sending || !(correctionForm[i]?.kode || '').trim()}
-                      className="text-xs px-3 py-1.5 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-40 transition-colors"
-                    >
-                      {feedbackMap[i]?.sending ? 'Memvalidasi AI...' : 'Kirim Koreksi'}
-                    </button>
+                    {!user && authConfig?.enabled ? (
+                      <button
+                        type="button"
+                        onClick={login}
+                        className="text-xs px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors"
+                      >
+                        🔐 Login untuk Kirim Koreksi
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => submitCorrection(i, msg)}
+                        disabled={feedbackMap[i]?.sending || !(correctionForm[i]?.kode || '').trim()}
+                        className="text-xs px-3 py-1.5 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-40 transition-colors"
+                      >
+                        {feedbackMap[i]?.sending ? 'Memvalidasi AI...' : 'Kirim Koreksi'}
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -1465,7 +1520,7 @@ function App() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="flex gap-3 items-end">
+        <form onSubmit={handleSubmit} className="flex gap-3 items-center">
           <div className="relative flex-1">
             <textarea
               value={input}

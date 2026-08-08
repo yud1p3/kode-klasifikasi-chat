@@ -11,3 +11,6 @@ node_modules/
 
 # Binary hasil build tool benchmark
 meili-benchmark/meili-benchmark
+
+# .env VPS (berisi secret produksi) — JANGAN di-commit
+backend/.env.vps

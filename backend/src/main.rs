@@ -13,7 +13,6 @@ mod auth;
 mod feedback;
 mod gemini;
 mod key_rotator;
-mod meili;
 mod quota;
 mod search;
 
@@ -87,8 +86,6 @@ struct AppState {
     key_rotator: Arc<KeyRotator>,
     last_request: std::sync::Mutex<std::time::Instant>,
     rate_limit_interval: Duration,
-    meili: meili::MeiliSearch,
-    search_backend: String,
     quota: quota::Quota,
     auth: auth::AuthConfig,
     /// Email admin (ADMIN_EMAILS, comma-separated) — satu-satunya yang boleh menghapus feedback.
@@ -244,14 +241,10 @@ fn fix_explanation_perihal(explanation: &str, perihal: &str) -> String {
 
 async fn chat(
     state: web::Data<AppState>,
-    req: HttpRequest,
     body: web::Json<ChatRequest>,
 ) -> HttpResponse {
-    // Auth: wajib login bila auth aktif; anonim bila nonaktif (fallback)
-    if let Err(resp) = auth::require_user(&req, &state.auth) {
-        return resp;
-    }
-
+    // Chat terbuka untuk semua (tanpa login). Rate limit & kuota tetap berlaku;
+    // API key Gemini pengguna dikirim via body (opsional).
     let message = body.message.trim();
     if message.is_empty() {
         return HttpResponse::BadRequest().json(ErrorResponse {
@@ -341,28 +334,15 @@ async fn chat(
         }
     };
 
-    // Pencarian semantic: Meilisearch (default) atau pgvector (SEARCH_BACKEND=pgvector)
-    let results = if state.search_backend == "meili" {
-        match state.meili.similarity_search(&embed_query, &embedding, 10).await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Meilisearch error: {e}");
-                return HttpResponse::InternalServerError().json(ErrorResponse {
-                    error: format!("Gagal pencarian (Meilisearch): {e}"),
-                    retry_after_secs: None,
-                });
-            }
-        }
-    } else {
-        match search::similarity_search(&state.db, &embedding, 10).await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Search error: {e}");
-                return HttpResponse::InternalServerError().json(ErrorResponse {
-                    error: format!("Gagal pencarian: {e}"),
-                    retry_after_secs: None,
-                });
-            }
+    // Pencarian semantic: pgvector (PostgreSQL) — satu-satunya backend search
+    let results = match search::similarity_search(&state.db, &embedding, 10).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Search error: {e}");
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: format!("Gagal pencarian: {e}"),
+                retry_after_secs: None,
+            });
         }
     };
 
@@ -416,14 +396,11 @@ async fn chat(
 /// Ekstrak teks PDF via poppler (pdftotext).
 /// Dipakai sebagai fallback untuk PDF SRIKANDI yang ToUnicode-nya rusak
 /// (pdf.js menghasilkan karakter garbled, poppler membaca benar).
-async fn extract_pdf(state: web::Data<AppState>, req: HttpRequest, mut payload: Multipart) -> HttpResponse {
+async fn extract_pdf(mut payload: Multipart) -> HttpResponse {
     use actix_web::web::BytesMut;
     use futures::StreamExt;
 
-    if let Err(resp) = auth::require_user(&req, &state.auth) {
-        return resp;
-    }
-
+    // Terbuka untuk semua (bagian dari alur chat tanpa login).
     // Simpan file multipart ke temp
     let tmp_path = std::env::temp_dir().join(format!("kkl_upload_{}.pdf", std::process::id()));
     let mut buf = BytesMut::new();
@@ -560,6 +537,11 @@ struct FeedbackRequest {
     api_keys: Option<Vec<String>>,
     #[serde(default)]
     candidates: Vec<feedback::Candidate>,
+    /// ID sesi perangkat/browser (di-generate frontend, disimpan di localStorage).
+    /// Dipakai untuk mengaitkan feedback — termasuk yang anonim — ke sesi chat,
+    /// tanpa perlu login.
+    #[serde(default)]
+    chat_id: Option<String>,
 }
 
 impl FeedbackRequest {
@@ -574,11 +556,6 @@ async fn submit_feedback(
     req: HttpRequest,
     body: web::Json<FeedbackRequest>,
 ) -> HttpResponse {
-    let user = match auth::require_user(&req, &state.auth) {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-
     let msg = body.message.trim();
     if msg.is_empty() || body.kode_ai.trim().is_empty() {
         return HttpResponse::BadRequest().json(ErrorResponse {
@@ -596,6 +573,15 @@ async fn submit_feedback(
     // Daftar API Key pengguna (multi-key, rotasi otomatis sebelum fallback key server)
     let keys = body.user_keys();
 
+    // ID sesi pengguna (opsional) — mengaitkan feedback anonim ke sesi chat.
+    // Dibersihkan & dibatasi panjangnya agar aman masuk DB.
+    let chat_id: Option<String> = body
+        .chat_id
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.chars().take(64).collect());
+
     // Privasi: simpan naskah terpotong (cukup untuk substansi & few-shot)
     let naskah_store: String = msg.chars().take(1000).collect();
 
@@ -610,19 +596,26 @@ async fn submit_feedback(
         .take(300)
         .collect();
 
-    // Feedback positif: cukup dicatat (konfirmasi AI benar)
+    // Feedback positif: TANPA WAJIB LOGIN — dicatat anonim bila user tidak
+    // login; identitas tetap tercatat bila user kebetulan sedang login.
     if ftype == "positive" {
+        let user = auth::optional_user(&req, &state.auth);
+        let (sub, email, name) = match &user {
+            Some(u) => (Some(u.sub.clone()), Some(u.email.clone()), Some(u.name.clone())),
+            None => (None, None, None),
+        };
         let res = sqlx::query(
-            "INSERT INTO klasifikasi_feedback (naskah, kode_ai, feedback_type, status, kode_terbaik, perihal, user_sub, user_email, user_name)
-             VALUES ($1, $2, 'positive', 'validated', $3, $4, $5, $6, $7)",
+            "INSERT INTO klasifikasi_feedback (naskah, kode_ai, feedback_type, status, kode_terbaik, perihal, user_sub, user_email, user_name, chat_id)
+             VALUES ($1, $2, 'positive', 'validated', $3, $4, $5, $6, $7, $8)",
         )
         .bind(&naskah_store)
         .bind(&body.kode_ai)
         .bind(&body.kode_ai)
         .bind(&perihal)
-        .bind(&user.sub)
-        .bind(&user.email)
-        .bind(&user.name)
+        .bind(sub)
+        .bind(email)
+        .bind(name)
+        .bind(chat_id)
         .execute(&state.db)
         .await;
         return match res {
@@ -638,7 +631,12 @@ async fn submit_feedback(
         };
     }
 
-    // ---- Koreksi ----
+    // ---- Koreksi: WAJIB LOGIN (akuntabilitas koreksi yang dipakai few-shot) ----
+    let user = match auth::require_user(&req, &state.auth) {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+
     let kode_koreksi = match &body.kode_koreksi {
         Some(k) if !k.trim().is_empty() => k.trim().to_string(),
         _ => {
@@ -681,8 +679,8 @@ async fn submit_feedback(
         Ok(Some(info)) => info,
         Ok(None) => {
             let _ = sqlx::query(
-                "INSERT INTO klasifikasi_feedback (naskah, kode_ai, feedback_type, kode_koreksi, alasan, perihal, user_sub, user_email, user_name, status, validasi_penjelasan)
-                 VALUES ($1, $2, 'correction', $3, $4, $5, $6, $7, $8, 'rejected', 'Kode tidak ditemukan di dataset')",
+                "INSERT INTO klasifikasi_feedback (naskah, kode_ai, feedback_type, kode_koreksi, alasan, perihal, user_sub, user_email, user_name, status, validasi_penjelasan, chat_id)
+                 VALUES ($1, $2, 'correction', $3, $4, $5, $6, $7, $8, 'rejected', 'Kode tidak ditemukan di dataset', $9)",
             )
             .bind(&naskah_store)
             .bind(&body.kode_ai)
@@ -692,6 +690,7 @@ async fn submit_feedback(
             .bind(&user.sub)
             .bind(&user.email)
             .bind(&user.name)
+            .bind(chat_id)
             .execute(&state.db)
             .await;
             return HttpResponse::Ok().json(serde_json::json!({
@@ -808,9 +807,9 @@ async fn submit_feedback(
     }
 
     let insert_res = sqlx::query(
-        "INSERT INTO klasifikasi_feedback (naskah, kode_ai, feedback_type, kode_koreksi, alasan, perihal, user_sub, user_email, user_name, status, kode_terbaik, validasi_penjelasan, validasi_raw, embedding)
+        "INSERT INTO klasifikasi_feedback (naskah, kode_ai, feedback_type, kode_koreksi, alasan, perihal, user_sub, user_email, user_name, status, kode_terbaik, validasi_penjelasan, validasi_raw, embedding, chat_id)
          VALUES ($1, $2, 'correction', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                 CASE WHEN $13::text IS NULL THEN NULL ELSE $13::vector END)",
+                 CASE WHEN $13::text IS NULL THEN NULL ELSE $13::vector END, $14)",
     )
     .bind(&naskah_store)
     .bind(&body.kode_ai)
@@ -825,6 +824,7 @@ async fn submit_feedback(
     .bind(&penjelasan)
     .bind(&raw_note)
     .bind(emb_store.as_deref())
+    .bind(chat_id)
     .execute(&state.db)
     .await;
 
@@ -845,12 +845,9 @@ async fn submit_feedback(
 /// Mendukung filter opsional: ?perihal=<kata kunci>&status=validated|rejected|pending
 async fn feedback_stats(
     state: web::Data<AppState>,
-    req: HttpRequest,
     query: web::Query<HashMap<String, String>>,
 ) -> HttpResponse {
-    if let Err(resp) = auth::require_user(&req, &state.auth) {
-        return resp;
-    }
+    // Terbuka untuk semua (tidak wajib login)
     let perihal = query.get("perihal").map(|s| s.as_str());
     let status = query.get("status").map(|s| s.as_str());
     match feedback::fetch_stats(&state.db, perihal, status).await {
@@ -944,12 +941,9 @@ async fn delete_feedback(
 /// Pencarian kode untuk dropdown koreksi.
 async fn codes_search(
     state: web::Data<AppState>,
-    req: HttpRequest,
     query: web::Query<HashMap<String, String>>,
 ) -> HttpResponse {
-    if let Err(resp) = auth::require_user(&req, &state.auth) {
-        return resp;
-    }
+    // Terbuka untuk semua (dipakai form koreksi yang tidak wajib login untuk mencari kode)
     let q = query.get("q").cloned().unwrap_or_default();
     if q.trim().len() < 2 {
         return HttpResponse::Ok().json(serde_json::json!([]));
@@ -998,18 +992,9 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .unwrap_or(3000);
 
-    // Konfigurasi Meilisearch (backup search engine)
-    let search_backend = env::var("SEARCH_BACKEND").unwrap_or_else(|_| "meili".into());
-    let meili_host = env::var("MEILI_HOST").unwrap_or_else(|_| "http://localhost:7700".into());
-    let meili_key = env::var("MEILI_MASTER_KEY").unwrap_or_default();
-    let meili_index = env::var("MEILI_INDEX").unwrap_or_else(|_| "klasifikasi_embedding".into());
-    let meili_hybrid = matches!(env::var("MEILI_HYBRID").as_deref(), Ok("1") | Ok("true") | Ok("yes"));
-
-    if search_backend == "meili" && meili_key.is_empty() {
-        eprintln!("⚠️  WARNING: SEARCH_BACKEND=meili tapi MEILI_MASTER_KEY kosong!");
-    }
-    println!("🔎 Search backend: {} {}", search_backend,
-        if search_backend == "meili" { format!("→ {} (index '{}', hybrid={})", meili_host, meili_index, meili_hybrid) } else { "(pgvector)".into() });
+    // Pencarian semantic via pgvector (PostgreSQL) — satu-satunya search backend.
+    // Data: tabel klasifikasi_embedding (embedding 768 dimensi, cosine similarity).
+    println!("🔎 Search backend: pgvector (PostgreSQL)");
 
     // Konfigurasi kuota free (RPM/RPD) — mencegah 429 secara proaktif.
     // Default konservatif free tier: gemini-2.5-flash 10 RPM / 250 RPD,
@@ -1080,7 +1065,6 @@ async fn main() -> anyhow::Result<()> {
         println!("🛡️  Anti brute-force hapus: {delete_max_attempts} percobaan gagal → lockout {delete_lockout_secs} detik");
     }
 
-    let meili_client = meili::MeiliSearch::new(meili_host, meili_key, meili_index, meili_hybrid);
     let quota = quota::Quota::new(quota_enabled, quota_chat_rpm, quota_chat_rpd, quota_embed_rpm, quota_embed_rpd);
 
     let state = web::Data::new(AppState {
@@ -1088,8 +1072,6 @@ async fn main() -> anyhow::Result<()> {
         key_rotator,
         last_request: std::sync::Mutex::new(std::time::Instant::now() - MIN_REQUEST_INTERVAL),
         rate_limit_interval,
-        meili: meili_client,
-        search_backend,
         quota,
         auth: auth_cfg,
         admin_emails,

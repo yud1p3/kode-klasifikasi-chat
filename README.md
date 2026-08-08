@@ -10,6 +10,8 @@ Asisten AI berbasis **Rust + React + TypeScript** untuk mencari kode klasifikasi
 - **Penjelasan AI** — Gemini memilih kode terbaik dari top-10 hasil, merangking ulang, dan menjelaskan alasannya
 - **Upload File PDF/DOCX** — Ekstrak teks langsung dari file: PDF via poppler (`pdftotext`) dengan fallback pdf.js, DOCX via mammoth
 - **Pemilihan Fungsi/Urusan** — Untuk setiap naskah (pendek maupun panjang), Gemini memilih salah satu dari Fungsi/Urusan induk (dibaca langsung dari database) + perihal inti yang dibersihkan dari nama orang, tempat/wilayah, dan keterangan waktu, lalu query embedding disusun sebagai `"FUNGSI > perihal"` agar hasil pencarian lebih akurat
+- **Tanpa Login untuk Chat & Feedback Positif** — chat dan konfirmasi 👍 bisa dipakai tanpa akun Google; feedback positif dicatat **anonim** bila tidak login (identitas ikut tercatat bila sedang login). Login bersifat **opsional** — hanya wajib untuk mengirim **koreksi kode klasifikasi** dan menghapus feedback (admin)
+- **Sesi Anonim (chat_id)** — setiap browser punya ID sesi acak (localStorage, UUID v4) yang dikirim bersama feedback; feedback anonim tetap bisa dikelompokkan per sesi chat untuk analisis. ID ini hanya angka acak di browser (bukan data perangkat/fingerprint teknis)
 - **Multi-Key Rotasi** — Beberapa API key gratis dirotasi otomatis; saat satu key kena 429 rate limit, permintaan dialihkan ke key berikutnya
 - **Pengaturan API Key (multi-key) di Frontend** — Menu Pengaturan untuk menyimpan banyak key per pengguna (localStorage), dengan tombol toggle lihat/sembunyikan; key dikirim berurutan ke backend dan dirotasi otomatis sebelum fallback ke key server
 - **Statistik Feedback dengan Filter** — Dashboard statistik bisa difilter perihal (kata kunci) & status (valid/ditolak/pending)
@@ -64,6 +66,9 @@ sudo -u postgres psql -d klasifikasi_arsip -c "CREATE EXTENSION IF NOT EXISTS ve
 
 # Restore data (embedding sudah termasuk)
 gunzip -c database/klasifikasi_arsip.sql.gz | psql -U postgres -d klasifikasi_arsip
+
+# (fitur sesi anonim, versi baru) — kolom chat_id untuk mengaitkan feedback anonim ke sesi chat
+psql -U postgres -d klasifikasi_arsip -c "ALTER TABLE klasifikasi_feedback ADD COLUMN IF NOT EXISTS chat_id text;"
 ```
 
 ### 3. Backend
@@ -87,7 +92,7 @@ npm install
 npm run dev
 ```
 
-Buka **http://localhost:5173**
+Buka **http://localhost:5174**
 
 ---
 
@@ -100,7 +105,7 @@ GEMINI_API_KEY=your-gemini-api-key
 # Multi-key (disarankan): comma-separated, rotasi otomatis saat kena 429
 GEMINI_API_KEYS=key1,key2,key3
 HOST=0.0.0.0
-PORT=3000
+PORT=3100
 
 # --- Admin feedback (fitur hapus) ---
 # Email admin yang berhak menghapus feedback (comma-separated, boleh lebih dari satu)
@@ -125,11 +130,13 @@ Catatan: `GEMINI_API_KEYS` adalah key **server**. Pengguna juga bisa menyimpan k
 | Method | Path | Deskripsi |
 |--------|------|-----------|
 | GET | `/api/health` | Health check |
-| POST | `/api/chat` | Chat klasifikasi |
-| POST | `/api/extract-pdf` | Ekstrak teks dari file PDF via poppler (multipart, field `file`) |
-| GET | `/api/feedback/stats` | Statistik feedback; filter opsional `?perihal=...&status=validated\|rejected\|pending` |
+| POST | `/api/chat` | Chat klasifikasi (**tanpa login**; rate limit & kuota tetap berlaku) |
+| POST | `/api/extract-pdf` | Ekstrak teks dari file PDF via poppler (multipart, field `file`; **tanpa login**) |
+| GET | `/api/feedback/stats` | Statistik feedback (terbuka, tanpa login); filter opsional `?perihal=...&status=validated\|rejected\|pending` |
 | DELETE | `/api/feedback/{id}` | Hapus feedback (khusus admin: `ADMIN_EMAILS` + body `{"password": "..."}` = `DELETE_SECRET`; anti brute-force: 5 gagal → 429 lockout 15 mnt) |
 | GET | `/api/me` | Info user login + `is_admin` |
+
+> **Model autentikasi:** chat & feedback positif (**👍**) tidak wajib login — feedback positif dicatat anonim bila tidak ada sesi. Mengirim **koreksi (✏️)** dan **menghapus feedback** wajib login Google (koreksi untuk akuntabilitas few-shot; hapus khusus admin `ADMIN_EMAILS` + `DELETE_SECRET`).
 
 ### POST `/api/chat`
 

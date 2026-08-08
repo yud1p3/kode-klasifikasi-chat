@@ -216,3 +216,14 @@ pub fn require_user(req: &HttpRequest, cfg: &AuthConfig) -> Result<AuthUser, act
         }))),
     }
 }
+
+/// Opsional login: Some(user) bila auth nonaktif (mode fallback) atau token
+/// valid; None bila auth aktif tapi user tidak login / token tidak valid.
+/// Dipakai endpoint yang terbuka untuk anonim (chat, feedback positif),
+/// agar identitas tetap tercatat bila user kebetulan sedang login.
+pub fn optional_user(req: &HttpRequest, cfg: &AuthConfig) -> Option<AuthUser> {
+    if !cfg.enabled {
+        return Some(AuthUser { sub: "anon".into(), email: "anon@local".into(), name: "Anonim".into() });
+    }
+    bearer_token(req).and_then(|t| verify_token(cfg, &t))
+}
