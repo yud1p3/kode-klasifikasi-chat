@@ -376,6 +376,12 @@
                 <textarea id="sk-fb-alasan" class="sk-fb-input sk-fb-input-alasan" rows="2" placeholder="Alasan koreksi (opsional)"></textarea>
               </div>
             </div>
+            <!-- User identity (nama SRIKANDI yang akan tercatat) -->
+            <div id="sk-fb-user-area" class="sk-fb-user" style="display:none">
+              <span class="sk-fb-user-icon">👤</span>
+              <span id="sk-fb-user-label-value" class="sk-fb-user-val" style="display:none"></span>
+              <input type="text" id="sk-fb-user-name" class="sk-fb-input sk-fb-input-user" placeholder="Nama Anda" style="display:none" />
+            </div>
             <!-- Status message -->
             <div id="sk-fb-status" class="sk-fb-status"></div>
           </div>
@@ -425,6 +431,38 @@
 
     // Single button: Sisipkan ke Naskah
     document.getElementById('sk-btn-sisipkan').addEventListener('click', () => handleSisipkan(result));
+
+    // Tampilkan identitas pengguna SRIKANDI (nama yang akan tercatat di feedback)
+    loadUserIdentity();
+  }
+
+  // Tampilkan nama pengguna SRIKANDI di area feedback. Bila tidak ter-scrape,
+  // tampilkan input manual agar user bisa mengisi sendiri.
+  async function loadUserIdentity() {
+    const userName = await getUserName();
+
+    const userArea = document.getElementById('sk-fb-user-area');
+    const userNameLabel = document.getElementById('sk-fb-user-label-value');
+    const userNameInput = document.getElementById('sk-fb-user-name');
+    if (!userArea) return;
+
+    userArea.style.display = 'flex';
+    if (userName) {
+      // Label read-only dari scrape SRIKANDI
+      if (userNameLabel) {
+        userNameLabel.textContent = userName;
+        userNameLabel.style.display = 'inline';
+      }
+      if (userNameInput) userNameInput.style.display = 'none';
+    } else {
+      // Fallback: input manual
+      if (userNameLabel) userNameLabel.style.display = 'none';
+      if (userNameInput) {
+        userNameInput.style.display = 'inline';
+        userNameInput.placeholder = 'Masukkan nama Anda';
+        userNameInput.readOnly = false;
+      }
+    }
   }
 
   // ── Handle: Sisipkan ke Naskah (feedback + isi form atomik) ────
@@ -521,9 +559,6 @@
   }
 
   // (overlayClickClose dihapus — hanya close via X button atau setelah sukses sisip)
-
-  // (loadUserIdentity dihapus — feedback positif kini anonim tanpa login; identitas
-  //  hanya tercatat bila user login via aplikasi web)
 
   // ── Panel Koreksi: cek login → tampilkan form / tombol login ──
 
@@ -1024,7 +1059,87 @@
     return div.innerHTML;
   }
 
-  // (scrapeUserName & getUserName dihapus — feedback positif kini anonim tanpa login)
+  // ── User Identity SRIKANDI ──────────────────────────────────
+  // Scrape nama lengkap pengguna dari halaman SRIKANDI (avatar/navbar) lalu
+  // cache di storage. Nama ini dikirim bersama feedback (positif & koreksi)
+  // agar feedback dari extension tercatat atas nama pengguna SRIKANDI.
+
+  const USER_STORAGE_KEY = 'srikandi_user_name';
+
+  function scrapeUserName() {
+    // 1. Cari img MUI Avatar dengan alt (ditemukan user: img.MuiAvatar-img[alt])
+    const avatarImg = document.querySelector('img.MuiAvatar-img[alt]');
+    if (avatarImg && avatarImg.alt && avatarImg.alt.trim().length > 0 && avatarImg.alt.trim().length < 100) {
+      return avatarImg.alt.trim();
+    }
+
+    // 2. Cari img dengan class mengandung "avatar"/"profile" dan punya alt
+    const imgSelectors = [
+      'img[class*="avatar"][alt]',
+      'img[class*="Avatar"][alt]',
+      'img[class*="profile"][alt]',
+      'img[class*="Profile"][alt]',
+      'img[alt]:not([alt=""])',
+    ];
+    for (const sel of imgSelectors) {
+      const el = document.querySelector(sel);
+      if (el && el.alt && el.alt.trim().length > 0 && el.alt.trim().length < 100) {
+        return el.alt.trim();
+      }
+    }
+
+    // 3. Selector berbasis teks
+    const selectors = [
+      '[class*="user-name"]', '[class*="username"]',
+      '[class*="profile-name"]', '[class*="display-name"]',
+      '[class*="nama-user"]', '[class*="nama_pegawai"]',
+      '[class*="MuiAvatar"] ~ [class*="Mui"]',
+      'header [class*="MuiTypography"]',
+      'nav [class*="MuiTypography"]',
+      '[class*="toolbar"] [class*="MuiTypography"]',
+    ];
+
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el && el.textContent.trim().length > 0 && el.textContent.trim().length < 100) {
+        return el.textContent.trim();
+      }
+    }
+
+    // 4. Fallback: cari text yang mengandung "Selamat datang" / "Hi" / "Halo"
+    const bodyText = document.body.textContent || '';
+    const welcomeMatch = bodyText.match(/(?:Selamat datang|Hi|Halo|Welcome)\s*,?\s*([A-Za-z\s.]+?)(?:[.!]|\s|$)/i);
+    if (welcomeMatch) {
+      const name = welcomeMatch[1].trim();
+      if (name.length > 0 && name.length < 60) {
+        return name;
+      }
+    }
+
+    return '';
+  }
+
+  async function getUserName() {
+    // Coba dari storage dulu (cache — scrape cukup sekali per browser)
+    try {
+      const stored = await chrome.storage.local.get([USER_STORAGE_KEY]);
+      if (stored[USER_STORAGE_KEY]) {
+        return stored[USER_STORAGE_KEY];
+      }
+    } catch (err) {
+    }
+
+    // Coba scrape dari halaman
+    const scraped = scrapeUserName();
+    if (scraped) {
+      try {
+        await chrome.storage.local.set({ [USER_STORAGE_KEY]: scraped });
+      } catch (err) {}
+      return scraped;
+    }
+
+    return ''; // Tidak ditemukan
+  }
 
   // ── Feedback ─────────────────────────────────────────────────
 
@@ -1075,6 +1190,21 @@
         }
       }
     } catch (err) {}
+
+    // Sertakan nama lengkap pengguna SRIKANDI — dipakai backend sebagai nama
+    // tampilan feedback (positif & koreksi). Prioritas: input manual di modal
+    // (bila user mengisi), fallback ke hasil scrape dari halaman SRIKANDI.
+    let userName = '';
+    const manualInput = document.getElementById('sk-fb-user-name');
+    if (manualInput && manualInput.style.display !== 'none') {
+      userName = manualInput.value.trim();
+    }
+    if (!userName) {
+      userName = await getUserName();
+    }
+    if (userName) {
+      payload.user_name = userName;
+    }
 
     try {
       const res = await chrome.runtime.sendMessage({

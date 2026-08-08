@@ -62,6 +62,20 @@ impl ChatRequest {
     }
 }
 
+/// Pilih nama tampilan feedback: nama SRIKANDI (dari extension) bila ada & tidak
+/// kosong, fallback ke nama Google. Normalisasi: trim + batasi 100 karakter.
+fn display_name(srikandi_name: Option<&str>, google_name: Option<&str>) -> Option<String> {
+    let s = srikandi_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.chars().take(100).collect());
+    let g = google_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.chars().take(100).collect());
+    s.or(g)
+}
+
 #[derive(Debug, Serialize, Clone)]
 struct ClassificationResult {
     id: i32,
@@ -546,6 +560,11 @@ struct FeedbackRequest {
     /// Perihal naskah (hasil rerank AI saat chat) — dipakai di prompt validasi & statistik.
     #[serde(default)]
     perihal: Option<String>,
+    /// Nama lengkap pengguna SRIKANDI (di-scrape extension dari halaman SRIKANDI).
+    /// Dipakai sebagai nama tampilan feedback dari extension; identitas login
+    /// Google tetap tercatat terpisah di user_sub/user_email bila user login.
+    #[serde(default)]
+    user_name: Option<String>,
     /// API Key Gemini milik pengguna (opsional, legacy tunggal). Diprioritaskan di atas key server.
     #[serde(default)]
     api_key: Option<String>,
@@ -615,12 +634,14 @@ async fn submit_feedback(
 
     // Feedback positif: TANPA WAJIB LOGIN — dicatat anonim bila user tidak
     // login; identitas tetap tercatat bila user kebetulan sedang login.
+    // Nama tampilan: nama SRIKANDI (dari extension) bila ada, fallback nama Google.
     if ftype == "positive" {
         let user = auth::optional_user(&req, &state.auth);
         let (sub, email, name) = match &user {
             Some(u) => (Some(u.sub.clone()), Some(u.email.clone()), Some(u.name.clone())),
             None => (None, None, None),
         };
+        let name = display_name(body.user_name.as_deref(), name.as_deref());
         let res = sqlx::query(
             "INSERT INTO klasifikasi_feedback (naskah, kode_ai, feedback_type, status, kode_terbaik, perihal, user_sub, user_email, user_name, chat_id)
              VALUES ($1, $2, 'positive', 'validated', $3, $4, $5, $6, $7, $8)",
@@ -653,6 +674,9 @@ async fn submit_feedback(
         Ok(u) => u,
         Err(r) => return r,
     };
+    // Nama tampilan: nama SRIKANDI (dari extension) bila ada, fallback nama Google.
+    // Identitas login tetap terlacak di user_sub/user_email.
+    let fb_display_name = display_name(body.user_name.as_deref(), Some(&user.name));
 
     let kode_koreksi = match &body.kode_koreksi {
         Some(k) if !k.trim().is_empty() => k.trim().to_string(),
@@ -706,7 +730,7 @@ async fn submit_feedback(
             .bind(&perihal)
             .bind(&user.sub)
             .bind(&user.email)
-            .bind(&user.name)
+            .bind(&fb_display_name)
             .bind(chat_id)
             .execute(&state.db)
             .await;
@@ -835,7 +859,7 @@ async fn submit_feedback(
     .bind(&perihal)
     .bind(&user.sub)
     .bind(&user.email)
-    .bind(&user.name)
+    .bind(&fb_display_name)
     .bind(status)
     .bind(&kode_terbaik)
     .bind(&penjelasan)
