@@ -1022,7 +1022,6 @@ function App() {
     e.preventDefault()
     if (!input.trim() || loading || cooldown !== null) return
 
-    const startTime = performance.now()
     const userMsg: Message = { role: 'user', content: input }
     setMessages(prev => [...prev, userMsg])
     setInput('')
@@ -1344,19 +1343,8 @@ function App() {
                       j === 0 ? 'bg-violet-950/30' : ''
                     }`}>
                       <div className="flex items-center gap-3">
-                        <span className="shrink-0 flex items-center gap-1.5">
-                          <span className="font-mono font-semibold text-cyan-400 text-xs">{r.kode}</span>
-                          <button
-                            onClick={() => copyKode(r.kode)}
-                            title="Salin kode klasifikasi"
-                            className="text-gray-500 hover:text-cyan-300 transition-colors"
-                          >
-                            {copiedKode === r.kode ? (
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-                            ) : (
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                            )}
-                          </button>
+                        <span className="shrink-0 font-mono font-semibold text-cyan-400 text-xs">
+                          {r.kode}
                         </span>
                         <span className="flex-1 text-gray-300">{r.deskripsi}</span>
                         <button
