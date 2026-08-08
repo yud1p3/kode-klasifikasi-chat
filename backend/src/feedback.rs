@@ -279,7 +279,7 @@ pub async fn fetch_stats(db: &PgPool, perihal: Option<&str>, status: Option<&str
 
     let top_user = sqlx::query_as::<_, (String, i64)>(
         &format!(
-            "SELECT COALESCE(NULLIF(user_email,''), user_name, 'anonim') AS u, count(*) AS c
+            "SELECT COALESCE(NULLIF(user_name,''), NULLIF(user_email,''), 'anonim') AS u, count(*) AS c
              FROM klasifikasi_feedback\n             {where_sql}
              GROUP BY 1 ORDER BY 2 DESC LIMIT 5"
         ),

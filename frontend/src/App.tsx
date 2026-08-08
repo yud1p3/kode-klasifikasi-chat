@@ -408,6 +408,30 @@ function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onCl
     return <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-950 border border-amber-800 text-amber-400 whitespace-nowrap">⏳ pending</span>
   }
 
+  // Kolom Pengguna: badge nama tampilan (SRIKANDI dari extension / nama Google),
+  // tooltip berisi email (bila ada). Fallback: email saja, lalu "Anonim".
+  const userCell = (r: RecentFeedback) => {
+    const name = (r.user_name || '').trim()
+    const email = (r.user_email || '').trim()
+    if (name && email) {
+      return (
+        <span
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-950 border border-violet-800 text-violet-300 whitespace-nowrap max-w-[160px]"
+          title={`${name} · ${email}`}
+        >
+          <span className="truncate">👤 {name}</span>
+        </span>
+      )
+    }
+    if (name) {
+      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-950 border border-violet-800 text-violet-300 whitespace-nowrap" title={name}>👤 {name}</span>
+    }
+    if (email) {
+      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-950 border border-cyan-800 text-cyan-400 whitespace-nowrap max-w-[160px]" title={email}><span className="truncate">✉️ {email}</span></span>
+    }
+    return <span className="text-gray-600 italic">Anonim</span>
+  }
+
   return (
     <main className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
       {/* Aksi: filter + refresh */}
@@ -507,7 +531,10 @@ function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onCl
           {stats.top_user.map(u => (
             <div key={u.user} className="space-y-1">
               <div className="flex items-center justify-between text-xs gap-2">
-                <span className="text-gray-300 truncate" title={u.user}>{u.user}</span>
+                <span className="inline-flex items-center gap-1 text-gray-300 truncate" title={u.user}>
+                  <span className="shrink-0">{u.user === 'anonim' ? '👻' : '👤'}</span>
+                  <span className="truncate">{u.user}</span>
+                </span>
                 <span className="text-gray-500 shrink-0">{u.count}×</span>
               </div>
               <div className="h-2 rounded-full bg-gray-800 overflow-hidden">
@@ -545,7 +572,7 @@ function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onCl
               {stats.recent.map(r => (
                 <tr key={r.id} className="border-b border-gray-800/60 last:border-0 hover:bg-gray-900/60 transition-colors">
                   <td className="px-4 py-2.5 text-gray-500 whitespace-nowrap">{r.waktu}</td>
-                  <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap max-w-[140px] truncate" title={r.user_email}>{r.user_name}</td>
+                  <td className="px-4 py-2.5">{userCell(r)}</td>
                   <td className="px-4 py-2.5 text-gray-400 max-w-[220px] truncate" title={r.perihal || r.naskah}>{(r.perihal || r.naskah) || '—'}</td>
                   <td className="px-4 py-2.5 font-mono text-cyan-400 whitespace-nowrap">{r.kode_ai}</td>
                   <td className="px-4 py-2.5">
