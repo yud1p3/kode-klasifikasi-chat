@@ -67,11 +67,15 @@
   }
 
   function getFileInput() {
-    // File input untuk upload DOCX/PDF (react-dropzone) di SRIKANDI
-    // accept actual: "application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
+    // File input untuk upload DOCX/PDF (react-dropzone) di SRIKANDI.
+    // Beberapa varian accept ditemukan: wordprocessingml (DOCX), openxmlformats,
+    // "docx" (snapshot lama), dan "application/pdf" (PDF murni). Selector
+    // mencakup SEMUA varian agar DOCX maupun PDF selalu terdeteksi.
     return document.querySelector(
       'input[type="file"][accept*="wordprocessingml"],' +
-      'input[type="file"][accept*="openxmlformats"]'
+      'input[type="file"][accept*="openxmlformats"],' +
+      'input[type="file"][accept*="docx"],' +
+      'input[type="file"][accept*="pdf"]'
     );
   }
 
@@ -204,7 +208,7 @@
     const file = fileInput.files[0];
     const ext = file.name.split('.').pop().toLowerCase();
     if (ext !== 'docx' && ext !== 'pdf') {
-      return { found: false, error: `Format ${ext} tidak didukung. Gunakan DOCX.` };
+      return { found: false, error: `Format ${ext} tidak didukung. Gunakan DOCX atau PDF.` };
     }
 
     // Read file as ArrayBuffer (untuk DOCX client-side) + base64 (untuk PDF → backend)
