@@ -153,6 +153,7 @@
 
 .sk-numitem {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
@@ -186,8 +187,18 @@
 }
 
 .sk-numdesc {
+  flex: 1;
+  min-width: 0;
   color: #555;
   font-size: 12px;
+}
+
+.sk-numpath {
+  flex-basis: 100%;
+  margin-left: 28px;
+  color: #888;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 /* ── Feedback Box ──────────────────────────────────────────────── */
@@ -512,6 +523,7 @@
 
 .sk-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px;
   padding: 8px 10px;
@@ -549,8 +561,18 @@
 }
 
 .sk-desc {
+  flex: 1;
+  min-width: 0;
   color: #555;
   font-size: 12px;
+}
+
+.sk-path {
+  flex-basis: 100%;
+  margin-left: 24px;
+  color: #888;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 /* ── Feedback Area ───────────────────────────────────────────── */

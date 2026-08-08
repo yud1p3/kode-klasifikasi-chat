@@ -50,7 +50,11 @@ pub async fn select_fungsi(api_key: &str, text: &str, daftar_fungsi: &str) -> an
     let prompt = format!(
         "Anda arsiparis. Dari teks naskah dinas berikut, tentukan SATU Fungsi/Urusan yang paling sesuai dengan SUBSTANSI MASALAH naskah (bukan bentuk surat), lalu tuliskan DUA varian perihal:\n\n\
          - perihal_lengkap: perihal naskah LENGKAP apa adanya (maks 1 kalimat, boleh memuat tanggal/tahun/nama/tempat sebagaimana tertulis di naskah).\n\
-         - perihal_inti: versi BERSIH dari perihal_lengkap, hanya substansi. WAJIB BUANG dari perihal_inti: 1) NAMA ORANG (contoh: \"usulan kenaikan pangkat atas nama Bambang\" cukup \"usulan kenaikan pangkat\"), 2) TEMPAT/WILAYAH/UNIT: kota, kabupaten, kecamatan, desa, instansi, alamat (contoh: \"bimbingan teknis SRIKANDI di Kecamatan Kesamben\" cukup \"bimbingan teknis SRIKANDI\"), 3) KETERANGAN WAKTU & NOMOR: tanggal, bulan, tahun, periode, nomor surat (contoh: \"laporan realisasi anggaran triwulan 2 tahun 2026\" cukup \"laporan realisasi anggaran triwulan\"). PERTAHANKAN istilah substantif seperti \"triwulan\", \"semester\", \"tahun anggaran\" bila menjadi sifat naskah; cukup hilangkan angka/penunjuk spesifiknya. Tulis perihal_inti dalam HURUF KECIL.\n\n\
+         - perihal_inti: versi BERSIH dari perihal_lengkap, hanya substansi. WAJIB BUANG dari perihal_inti: 1) NAMA ORANG (contoh: \"usulan kenaikan pangkat atas nama Bambang\" cukup \"usulan kenaikan pangkat\"), 2) TEMPAT/WILAYAH/UNIT: kota, kabupaten, kecamatan, desa, instansi, alamat (contoh: \"bimbingan teknis SRIKANDI di Kecamatan Kesamben\" cukup \"bimbingan teknis SRIKANDI\"), 3) KETERANGAN WAKTU & NOMOR: tanggal, bulan, tahun, periode, nomor surat (contoh: \"realisasi anggaran triwulan 2 tahun 2026\" cukup \"realisasi anggaran triwulan\"), 4) BENTUK DOKUMEN: kata seperti \"standar operasional prosedur\", \"SOP\", \"juknis\", \"laporan\", \"surat edaran\", \"undangan\", \"berita acara\", \"memo\" BUKAN substansi — buang (contoh: \"standar operasional prosedur inovasi baper\" cukup \"inovasi layanan baper\"). PERTAHANKAN istilah substantif seperti \"triwulan\", \"semester\", \"tahun anggaran\" bila menjadi sifat naskah; cukup hilangkan angka/penunjuk spesifiknya. Tulis perihal_inti dalam HURUF KECIL.\n\n\
+         ATURAN PENTING — JANGAN TERTIPU BENTUK DOKUMEN:\n\
+         1. Bentuk dokumen (SOP, surat, juknis, laporan, undangan, berita acara, memo, surat edaran) BUKAN penentu klasifikasi. Klasifikasikan berdasarkan SUBSTANSI/ISI, bukan jenis dokumen. Contoh: \"SOP pelayanan perpustakaan\" → PERPUSTAKAAN (bukan ORGANISASI DAN KETATALAKSANAAN); \"juknis bantuan operasional sekolah\" → PENDIDIKAN (bukan KETATAUSAHAAN).\n\
+         2. Jangan tertipu NAMA INSTANSI. Kop surat \"Dinas Perpustakaan dan Kearsipan\" TIDAK otomatis berarti KEARSIPAN — lihat isi: bila substansi layanan perpustakaan (perpustakaan, pustaka, pojok baca, literasi baca, layanan perpustakaan) → PERPUSTAKAAN.\n\
+         3. Perhatikan SUBSTANSI kata kunci dalam teks: kata \"perpustakaan\", \"pustaka\", \"pojok baca\", \"literasi baca\", \"bahan pustaka\" jelas mengarah ke PERPUSTAKAAN; kata \"kearsipan\", \"arsip\", \"pengelolaan arsip\" mengarah ke KEARSIPAN.\n\n\
          Daftar Fungsi/Urusan:\n{daftar}\n\n\
          Teks naskah:\n{text}\n\n\
          Keluarkan HANYA JSON valid: {{\"fungsi\":\"NAMA PERSIS DARI DAFTAR\",\"perihal_inti\":\"perihal inti huruf kecil\",\"perihal_lengkap\":\"perihal lengkap apa adanya\"}}",
@@ -58,7 +62,9 @@ pub async fn select_fungsi(api_key: &str, text: &str, daftar_fungsi: &str) -> an
     );
     let body = serde_json::json!({
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 8192, "thinkingConfig": { "thinkingBudget": 0 } }
+        // temperature 0: deterministik — hasil select_fungsi (yang menentukan
+        // query embedding & fungsi) harus konsisten antar panggilan.
+        "generationConfig": { "temperature": 0.0, "maxOutputTokens": 8192, "thinkingConfig": { "thinkingBudget": 0 } }
     });
     let resp = post(&client, &url, &body).await?;
     let json: Value = resp.json().await?;
@@ -219,7 +225,9 @@ pub async fn rerank_and_explain(
 
     let body = serde_json::json!({
         "contents": [{ "parts": [{"text": prompt}] }],
-        "generationConfig": { "temperature": 0.1, "maxOutputTokens": 8192, "thinkingConfig": { "thinkingBudget": 0 } }
+        // temperature 0: deterministik — konsisten dengan select_fungsi, agar
+        // naskah yang sama selalu menghasilkan urutan kandidat yang sama.
+        "generationConfig": { "temperature": 0.0, "maxOutputTokens": 8192, "thinkingConfig": { "thinkingBudget": 0 } }
     });
 
     let resp = post(&client, &url, &body).await?;

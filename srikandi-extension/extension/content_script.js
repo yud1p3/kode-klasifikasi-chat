@@ -244,6 +244,7 @@
                  ${isSelected ? 'checked' : ''} />
           <span class="sk-kode">${escapeHtml(item.kode)}</span>
           <span class="sk-desc">${escapeHtml(item.deskripsi)}</span>
+          ${item.path ? `<span class="sk-path">${escapeHtml(item.path)}</span>` : ''}
         </label>
       `;
     }).join('');
@@ -265,8 +266,8 @@
 
     // Build dropdown options for Setuju mode
     const setujuOptions = subItems.map((item, idx) =>
-      `<option value="${escapeHtml(item.kode)}" data-deskripsi="${escapeHtml(item.deskripsi)}" ${idx === 0 ? 'selected' : ''}>
-        ${escapeHtml(item.kode)} &mdash; ${escapeHtml(item.deskripsi)}
+      `<option value="${escapeHtml(item.kode)}" data-deskripsi="${escapeHtml(item.deskripsi)}" data-path="${escapeHtml(item.path || '')}" ${idx === 0 ? 'selected' : ''}>
+        ${escapeHtml(item.kode)} &mdash; ${escapeHtml(item.deskripsi)}${item.path ? ` (${escapeHtml(item.path)})` : ''}
       </option>`
     ).join('');
 
@@ -318,6 +319,7 @@
                 <span class="sk-num">${idx + 1}.</span>
                 <span class="sk-numkode">${escapeHtml(item.kode)}</span>
                 <span class="sk-numdesc">${escapeHtml(item.deskripsi)}</span>
+                ${item.path ? `<span class="sk-numpath">${escapeHtml(item.path)}</span>` : ''}
               </div>
             `).join('')}
           </div>

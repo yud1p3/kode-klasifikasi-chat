@@ -206,7 +206,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
 
 function mapChatResult(data) {
   const top = Array.isArray(data.results) ? data.results : [];
-  const candidates = top.slice(0, 5).map(r => ({
+  // Hanya 3 kandidat teratas yang ditampilkan (permintaan user)
+  const candidates = top.slice(0, 3).map(r => ({
     kode: r.kode || '',
     deskripsi: r.deskripsi || '',
     path: r.path || '',
