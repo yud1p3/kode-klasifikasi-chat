@@ -1,11 +1,7 @@
 {
   "mcpServers": {
     "codebase-memory": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "codebase-memory-mcp"
-      ]
+      "command": "/home/yudi/.local/bin/codebase-memory-mcp"
     }
   }
 }
