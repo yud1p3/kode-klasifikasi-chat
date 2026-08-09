@@ -42,6 +42,18 @@ stop_one() {
 
 start() {
   echo "== Memulai aplikasi (PostgreSQL pgvector) =="
+  # Pastikan GOOGLE_REDIRECT_URI memakai nilai LENGKAP dari backend/.env:
+  # Rust dotenv TIDAK menimpa env var yang sudah ter-set di environment
+  # (mis. GOOGLE_REDIRECT_URI dari .env root/shell yang hanya berisi
+  # localhost:5174), sehingga redirect URI extension
+  # https://<id>.chromiumapp.org/ tidak pernah terdaftar → login Google
+  # extension gagal redirect_uri_mismatch. Nilai di-backend/.env lebih lengkap.
+  local gru
+  gru="$(grep -E '^GOOGLE_REDIRECT_URI=' "$DIR/backend/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  if [ -n "$gru" ]; then
+    export GOOGLE_REDIRECT_URI="$gru"
+    echo "🌐 GOOGLE_REDIRECT_URI dimuat dari backend/.env (${gru//,/ +} URI)"
+  fi
   start_one "backend :3100" "$DIR/backend" "./target/debug/kode-klasifikasi-chat" "$BACKEND_LOG" "$BACKEND_PID"
   start_one "frontend :5174" "$DIR/frontend" "env VITE_API_URL=http://localhost:3100 ./node_modules/.bin/vite --port 5174 --strictPort" "$FRONTEND_LOG" "$FRONTEND_PID"
   sleep 4

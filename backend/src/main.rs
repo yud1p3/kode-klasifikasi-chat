@@ -642,11 +642,34 @@ async fn auth_google(
     }
     // Pakai redirect_uri yang dikirim frontend BILA termasuk daftar yang diizinkan;
     // selain itu (atau kosong) fallback ke URI pertama.
-    let redirect_uri = body
-        .redirect_uri
-        .clone()
-        .filter(|u| state.auth.is_allowed_redirect(u))
-        .unwrap_or_else(|| state.auth.redirect_uris.first().cloned().unwrap_or_default());
+    // Penting: bila redirect_uri DIKIRIM tapi TIDAK diizinkan, TOLAK dengan pesan
+    // jelas — jangan fallback senyap ke URI lain. Google memvalidasi redirect_uri
+    // saat exchange code (harus SAMA dengan yang dipakai membangun URL login),
+    // jadi mengganti diam-diam memicu error 'redirect_uri_mismatch' yang
+    // menyesatkan (mis. extension Chrome mengirim https://<id>.chromiumapp.org/).
+    let redirect_uri = match &body.redirect_uri {
+        Some(uri) if !uri.trim().is_empty() && !state.auth.is_allowed_redirect(uri) => {
+            eprintln!(
+                "🔐 Login ditolak: redirect_uri tidak diizinkan: {uri:?} | diizinkan: {:?}",
+                state.auth.redirect_uris
+            );
+            return HttpResponse::BadRequest().json(ErrorResponse {
+                error: format!(
+                    "redirect_uri tidak terdaftar di server: {uri}. Pastikan URI ini ada di GOOGLE_REDIRECT_URI backend dan Google Cloud Console (Authorized redirect URIs)."
+                ),
+                retry_after_secs: None,
+            });
+        }
+        _ => body
+            .redirect_uri
+            .clone()
+            .filter(|u| state.auth.is_allowed_redirect(u))
+            .unwrap_or_else(|| state.auth.redirect_uris.first().cloned().unwrap_or_default()),
+    };
+    eprintln!(
+        "🔐 Login Google: client_id {}…, redirect_uri dipakai: {redirect_uri}",
+        state.auth.client_id.chars().take(12).collect::<String>()
+    );
     match auth::exchange_code(&state.auth, &body.code, &body.code_verifier, &redirect_uri).await {
         Ok(user) => match auth::issue_token(&state.auth, &user) {
             Ok(token) => HttpResponse::Ok().json(serde_json::json!({ "token": token, "user": user })),

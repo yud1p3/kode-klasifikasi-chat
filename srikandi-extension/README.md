@@ -1,8 +1,8 @@
 # 📦 Srikandi Extension — Analisa Naskah SRIKANDI
 
-Chrome Extension (MV3) untuk aplikasi **SRIKANDI** (`srikandi.arsip.go.id`).
-Dibuat dari project `srikandi-scraper` dan diadaptasi agar bekerja dengan
-**backend Kode Klasifikasi** (repo ini — `kode-klasifikasi-chat`, Rust/Actix + pgvector).
+Chrome Extension (MV3) untuk aplikasi **SRIKANDI** (`srikandi.arsip.go.id`),
+diadaptasi agar bekerja dengan **backend Kode Klasifikasi** (repo ini —
+`kode-klasifikasi-chat`, Rust/Actix + pgvector).
 
 Tujuan sama dengan aplikasi web: memperoleh **perihal**, **isi ringkas**, **penjelasan AI**, dan
 **kode klasifikasi** dari naskah (PDF/DOCX) langsung di halaman SRIKANDI, lalu
