@@ -12,6 +12,8 @@ Ekstensi Chrome **"Analisa Naskah SRIKANDI"** membantu arsiparis mengklasifikasi
 
 Kebijakan Privasi ini menjelaskan data apa saja yang dikumpulkan, bagaimana data digunakan, dan hak Anda sebagai pengguna. Dengan memasang dan menggunakan ekstensi ini, Anda dianggap telah membaca dan menyetujui kebijakan ini.
 
+> ⚠️ **Tanggung jawab kerahasiaan naskah ada pada pengguna.** Ekstensi ini **tidak** menyaring klasifikasi keamanan naskah sebelum dikirim ke layanan AI. Sebelum menekan "Analisa dengan AI", pastikan naskah yang akan dianalisa **bukan** naskah rahasia dan **tidak** berisi informasi yang dikecualikan (rahasia negara, data pribadi, rahasia jabatan, dan sebagainya — Pasal 17 UU No. 14/2008 tentang Keterbukaan Informasi Publik). Mengirim naskah berklasifikasi ke layanan AI adalah tanggung jawab pengguna sepenuhnya.
+
 ---
 
 ## 2. Data yang Dikumpulkan
@@ -67,6 +69,10 @@ Untuk menghasilkan analisa, teks naskah dikirim ke **layanan Google Gemini** (vi
 - Google menggunakan data untuk memproses permintaan Anda saat itu; **kebijakan Google** berlaku untuk pemrosesan ini (lihat Kebijakan Privasi Google).
 - Data **tidak dijual** dan tidak digunakan untuk iklan.
 
+> ⚠️ **JANGAN menganalisa naskah rahasia atau naskah berisi informasi yang dikecualikan.**
+>
+> Kerahasiaan naskah **sepenuhnya merupakan tanggung jawab pengguna dan instansi pengguna**. Ekstensi menampilkan peringatan (di popup dan di bawah tombol "Analisa dengan AI"), namun peringatan tersebut **tidak menggantikan** kewajiban pengguna untuk memastikan naskah yang dianalisa adalah naskah biasa (non-rahasia). "Informasi yang dikecualikan" mencakup antara lain rahasia negara, informasi yang dapat membahayakan keamanan/pertahanan negara, hak pribadi (data pribadi), rahasia jabatan, dan rahasia bisnis (Pasal 17 UU No. 14/2008 jo. PP No. 61/2010).
+>
 > Jika kebijakan instansi melarang pengiriman isi naskah ke layanan eksternal, gunakan server instansi dengan konfigurasi yang sesuai, atau jangan gunakan fitur analisa AI untuk dokumen tersebut.
 
 ---

@@ -18,5 +18,10 @@ backend/.env.vps
 # Backup file lama
 *.old
 
+# Data mentah SKKAD (besar + binary) — data kerja lokal, jangan di-commit
+klasifikasi_arsip.csv
+klasifikasi_arsip_lengkap.csv
+skkad.xlsx
+
 # Kunci privat extension SRIKANDI — JANGAN di-commit (hanya kunci publik di manifest)
 srikandi-extension/keys/

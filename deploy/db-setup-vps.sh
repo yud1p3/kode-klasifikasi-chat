@@ -50,6 +50,75 @@ echo "== STEP4: grants + verifikasi =="
 sudo -n -u postgres psql -d klasifikasi_arsip -c "GRANT ALL ON ALL TABLES IN SCHEMA public TO kklas; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO kklas; GRANT USAGE, CREATE ON SCHEMA public TO kklas;" >/dev/null
 # Migrasi skema terbaru (kolom chat_id utk sesi anonim — dump lama belum punya):
 sudo -n -u postgres psql -d klasifikasi_arsip -c "ALTER TABLE klasifikasi_feedback ADD COLUMN IF NOT EXISTS chat_id text" >/dev/null 2>&1 && echo '✅ chat_id column siap'
+
+# ── STEP4b: migrasi kolom metadata SKKAD (guard + retensi + penyusutan) ──
+# Kolom ini dipakai backend BARU (dikecualikan::deteksi_kode, endpoint
+# /api/dikecualikan/kode-rahasia, dan metadata retensi/penyusutan di hasil).
+# Dump DB yang dibuat SETELAH migrasi lokal sudah berisi kolom+data; blok ini
+# aman (IF NOT EXISTS) untuk dump lama yang belum punya.
+echo "== STEP4b: migrasi kolom metadata SKKAD =="
+# Direktori dipakai untuk log & CSV backfill — jamin ada (defensif, terutama saat run ulang)
+mkdir -p /tmp/kkl-migrate
+# Output ke log (bukan /dev/null) agar pesan error yang ditampilkan benar-benar ada:
+sudo -n -u postgres psql -d klasifikasi_arsip -v ON_ERROR_STOP=1 \
+  > /tmp/kkl-migrate/step4b_alter.log 2>&1 <<'SQL' && echo '✅ kolom metadata SKKAD siap (ALTER TABLE)' \
+  || { echo '⚠️  ALTER TABLE metadata SKKAD gagal:'; tail -5 /tmp/kkl-migrate/step4b_alter.log; }
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS parent_id integer;
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS retensi_aktif integer;
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS retensi_inaktif integer;
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS penyusutan_akhir text;
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS klasifikasi_keamanan text;
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS pertimbangan text;
+SQL
+
+# Backfill data metadata SKKAD bila CSV disediakan (untuk dump LAMA yang
+# kolomnya kosong). Kirim file ke VPS: scp klasifikasi_arsip_lengkap.csv
+# root@VPS:/tmp/kkl-migrate/  lalu jalankan ulang script ini.
+# PENTING — format CSV (dari tools/gabung_skkad.py) persis 10 kolom:
+#   id,kode,deskripsi,path,parent_id,retensi_aktif,retensi_inaktif,
+#   penyusutan_akhir,klasifikasi_keamanan,pertimbangan
+# \copy memetakan kolom by-position (bukan by-nama), jadi temp table harus
+# punya 10 kolom dengan urutan SAMA seperti header CSV. Di COPY format CSV,
+# string kosong otomatis jadi NULL (aman untuk record tanpa data skkad).
+# CSV harus readable oleh user postgres (\copy jalan sebagai postgres):
+#   chmod 644 /tmp/kkl-migrate/klasifikasi_arsip_lengkap.csv
+if [ -f /tmp/kkl-migrate/klasifikasi_arsip_lengkap.csv ]; then
+  echo '   • CSV SKKAD ditemukan — backfill metadata...'
+  # Satu sesi psql: buat temp table → \copy → UPDATE → (temp drop saat sesi tutup)
+  sudo -n -u postgres psql -d klasifikasi_arsip -v ON_ERROR_STOP=1 \
+    > /tmp/kkl-migrate/step4b_backfill.log 2>&1 <<'SQL' && echo '✅ backfill metadata SKKAD selesai' \
+    || { echo '⚠️  backfill gagal — log:'; tail -8 /tmp/kkl-migrate/step4b_backfill.log; }
+CREATE TEMP TABLE _tmp_skkad (
+  id integer PRIMARY KEY,
+  kode text,
+  deskripsi text,
+  path text,
+  parent_id integer,
+  retensi_aktif integer,
+  retensi_inaktif integer,
+  penyusutan_akhir text,
+  klasifikasi_keamanan text,
+  pertimbangan text
+);
+\copy _tmp_skkad FROM '/tmp/kkl-migrate/klasifikasi_arsip_lengkap.csv' WITH (FORMAT csv, HEADER true)
+UPDATE klasifikasi_embedding e
+SET parent_id = t.parent_id,
+    retensi_aktif = t.retensi_aktif,
+    retensi_inaktif = t.retensi_inaktif,
+    penyusutan_akhir = t.penyusutan_akhir,
+    klasifikasi_keamanan = t.klasifikasi_keamanan,
+    pertimbangan = t.pertimbangan
+FROM _tmp_skkad t
+WHERE e.id = t.id;
+SQL
+else
+  echo 'ℹ️  CSV SKKAD tidak ditemukan di /tmp/kkl-migrate/ — kolom baru kosong'
+  echo '   (dump DB baru sudah berisi data; hanya perlu CSV bila restore dari dump lama)'
+fi
+
+# Verifikasi kolom metadata
+sudo -n -u postgres psql -d klasifikasi_arsip -tAc \
+  "SELECT 'metadata_terisi: ' || count(*) || ' / ' || (SELECT count(*) FROM klasifikasi_embedding) FROM klasifikasi_embedding WHERE klasifikasi_keamanan IS NOT NULL AND klasifikasi_keamanan <> ''"
 echo -n "embedding_rows: " && sudo -n -u postgres psql -d klasifikasi_arsip -tAc "SELECT count(*) FROM klasifikasi_embedding"
 echo -n "feedback_rows:  " && sudo -n -u postgres psql -d klasifikasi_arsip -tAc "SELECT count(*) FROM klasifikasi_feedback"
 echo -n "vector_ext:     " && sudo -n -u postgres psql -d klasifikasi_arsip -tAc "SELECT extversion FROM pg_extension WHERE extname='vector'"

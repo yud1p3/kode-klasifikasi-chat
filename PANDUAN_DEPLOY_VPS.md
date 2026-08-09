@@ -83,6 +83,64 @@ sudo -u postgres psql -d klasifikasi_arsip -c "ALTER TABLE klasifikasi_feedback 
 rm -f /tmp/klasifikasi_arsip.dump
 ```
 
+### 3d. Migrasi kolom metadata SKKAD (guard rahasia + retensi/penyusutan)
+
+Backend baru memakai kolom metadata per-kode dari perbup SKKAD untuk:
+- **Guard naskah rahasia** — `deteksi_kode` mencocokkan kode klasifikasi yang tertulis di naskah dengan daftar kode berklasifikasi **Terbatas/Rahasia/Sangat Rahasia** (dari kolom `klasifikasi_keamanan`), diblokir sebelum dikirim ke Gemini.
+- **Hasil klasifikasi** — retensi aktif/inaktif, penyusutan akhir, dan klasifikasi keamanan ditampilkan di UI web & extension.
+
+Dump DB yang dibuat **setelah** migrasi lokal (perintah `pg_dump` di §3a) **sudah berisi kolom + datanya** — tidak perlu apa-apa. Bila Anda restore dari **dump lama**, jalankan migrasi berikut:
+
+```bash
+# 1. Tambah kolom (idempoten — aman dijalankan kapan pun)
+sudo -u postgres psql -d klasifikasi_arsip <<'SQL'
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS parent_id integer;
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS retensi_aktif integer;
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS retensi_inaktif integer;
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS penyusutan_akhir text;
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS klasifikasi_keamanan text;
+ALTER TABLE klasifikasi_embedding ADD COLUMN IF NOT EXISTS pertimbangan text;
+SQL
+
+# 2. Backfill data dari CSV (kirim dulu dari WSL):
+#    scp klasifikasi_arsip_lengkap.csv root@<IP-VPS>:/tmp/kkl-migrate/
+#    (pastikan readable oleh user postgres: chmod 644 /tmp/kkl-migrate/klasifikasi_arsip_lengkap.csv)
+#    PENTING: CSV hasil tools/gabung_skkad.py punya 10 kolom
+#    (id,kode,deskripsi,path,parent_id,retensi_aktif,retensi_inaktif,
+#    penyusutan_akhir,klasifikasi_keamanan,pertimbangan). \copy memetakan
+#    kolom by-position, jadi temp table di bawah harus sama persis 10 kolom.
+sudo -u postgres psql -d klasifikasi_arsip <<'SQL'
+CREATE TEMP TABLE _tmp_skkad (
+  id integer PRIMARY KEY,
+  kode text,
+  deskripsi text,
+  path text,
+  parent_id integer,
+  retensi_aktif integer,
+  retensi_inaktif integer,
+  penyusutan_akhir text,
+  klasifikasi_keamanan text,
+  pertimbangan text
+);
+\copy _tmp_skkad FROM '/tmp/kkl-migrate/klasifikasi_arsip_lengkap.csv' WITH (FORMAT csv, HEADER true)
+UPDATE klasifikasi_embedding e
+SET parent_id = t.parent_id,
+    retensi_aktif = t.retensi_aktif,
+    retensi_inaktif = t.retensi_inaktif,
+    penyusutan_akhir = t.penyusutan_akhir,
+    klasifikasi_keamanan = t.klasifikasi_keamanan,
+    pertimbangan = t.pertimbangan
+FROM _tmp_skkad t
+WHERE e.id = t.id;
+SQL
+
+# 3. Verifikasi — harus menampilkan 1.903+ kode terisi:
+sudo -u postgres psql -d klasifikasi_arsip -tAc \
+  "SELECT count(*) FROM klasifikasi_embedding WHERE klasifikasi_keamanan IN ('Rahasia','Sangat Rahasia','Terbatas')"
+```
+
+> **Script otomatis:** `deploy/db-setup-vps.sh` (STEP4b) sudah melakukan langkah 1 + 2 sekaligus bila file CSV ada di `/tmp/kkl-migrate/` — tinggal jalankan script itu.
+
 ---
 
 ## 4. Pencarian Semantic via pgvector (TANPA Meilisearch)
@@ -188,10 +246,14 @@ Cek log startup — harusnya:
 ```
 🔑 Loaded N Gemini API key(s)
 🔎 Search backend: pgvector (PostgreSQL)
+📊 Kuota free aktif: chat 10 RPM / 250 RPD · embed 100 RPM / 10000 RPD
+🛡️  Kode klasifikasi sensitif dimuat: 1903 kode (Rahasia/Sangat Rahasia/Terbatas)
 🔐 Auth Google AKTIF (redirect: https://<domain>.ngrok-free.dev/auth/callback)
 👑 Admin feedback: ...
 🔒 DELETE_SECRET terkonfigurasi (N karakter)
 ```
+
+> Baris `🛡️ Kode klasifikasi sensitif dimuat` menandakan lapisan guard kode SKKAD aktif. Bila tidak muncul (hanya peringatan gagal muat), pastikan migrasi §3d sudah dijalankan — guard berbasis teks tetap aktif, lapisan kode nonaktif.
 
 > **Catatan `default_server`:** bila VPS sudah punya situs lain yang listen di port 80 (mis. aplikasi lain), ubah `listen 80 default_server;` di config ini menjadi `listen 80;` + `server_name <domain-ngrok-vps>;`, agar tidak saling rebut. Atau nonaktifkan situs lama: `sudo rm /etc/nginx/sites-enabled/<situs-lama>`.
 >
@@ -231,9 +293,15 @@ curl -s https://liqueur-douche-defuse.ngrok-free.dev/api/health
 # 2. Auth config — redirect_uris harus berisi domain VPS
 curl -s https://liqueur-douche-defuse.ngrok-free.dev/api/auth/config
 
-# 3. Login via browser → buka domain, klik "Masuk dengan Google"
+# 3. Guard kode rahasia — endpoint daftar kode sensitif SKKAD (dipakai extension):
+curl -s https://liqueur-douche-defuse.ngrok-free.dev/api/dikecualikan/kode-rahasia | head -c 200
+# → {"kode":["010.03",...],"level":[...],"total":1903}
 
-# 4. Chat uji (setelah login) — pilih Fungsi/Urusan, upload PDF/DOCX, submit feedback
+# 4. Login via browser → buka domain, klik "Masuk dengan Google"
+
+# 5. Chat uji (setelah login) — pilih Fungsi/Urusan, upload PDF/DOCX, submit feedback
+#    · naskah memuat kode berklasifikasi (mis. "Nomor: 001/010.03/2026/...") → ditolak 400
+#    · hasil kandidat menampilkan badge 🔒 klasifikasi + 🗓️ retensi + ♻️ penyusutan
 ```
 
 ---
