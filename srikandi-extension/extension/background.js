@@ -212,6 +212,11 @@ function mapChatResult(data) {
     deskripsi: r.deskripsi || '',
     path: r.path || '',
     similarity: r.similarity || 0,
+    // Metadata SKKAD (opsional — dari kolom baru klasifikasi_embedding)
+    retensi_aktif: r.retensi_aktif ?? null,
+    retensi_inaktif: r.retensi_inaktif ?? null,
+    penyusutan_akhir: r.penyusutan_akhir || null,
+    klasifikasi_keamanan: r.klasifikasi_keamanan || null,
   }));
   return {
     perihal: data.perihal || '',
@@ -226,11 +231,241 @@ function mapChatResult(data) {
   };
 }
 
+// ── DETEKSI INFORMASI DIKECUALIKAN (tanpa AI) ─────────────────
+// Blok ini dipisahkan marker agar bisa diuji via `node test_deteksi.js`.
+// Logika harus SAMA dengan backend/src/dikecualikan.rs. Aturan konservatif:
+// satu NIK/KTP pemohon normal TIDAK diblokir; kata "rahasia"/"terbatas"
+// lowercase biasa TIDAK dianggap label.
+
+function normTeks(s) {
+  return String(s || '').toUpperCase().replace(/\s+/g, ' ');
+}
+
+function countNIK(teks) {
+  // Hitung run angka PERSIS 16 digit (pola NIK) — diselaraskan dengan
+  // backend/src/dikecualikan.rs (run 17+ digit tidak dihitung).
+  const s = String(teks || '');
+  let count = 0;
+  let run = 0;
+  for (const ch of s) {
+    if (ch >= '0' && ch <= '9') {
+      run++;
+    } else {
+      if (run === 16) count++;
+      run = 0;
+    }
+  }
+  if (run === 16) count++;
+  return count;
+}
+
+function deteksiInformasiDikecualikan(teks) {
+  const alasan = [];
+  const push = (r) => { if (!alasan.includes(r)) alasan.push(r); };
+  const n = normTeks(teks);
+
+  // Tier 1: label klasifikasi naskah dinas
+  for (const p of ['SANGAT RAHASIA', 'RAHASIA NEGARA']) {
+    if (n.includes(p)) push(`label '${p}'`);
+  }
+  // Pola kop naskah dinas: SIFAT/KLASIFIKASI … RAHASIA/TERBATAS.
+  // "bersifat rahasia" = frasa klasifikasi asli → diblokir.
+  // Guard negasi: "tidak/bukan bersifat rahasia" TIDAK dianggap label.
+  for (const kw of ['SIFAT', 'KLASIFIKASI', 'KLASSIFIKASI']) {
+    const i = n.indexOf(kw);
+    if (i >= 0) {
+      const after = n.slice(i + kw.length, i + kw.length + 60);
+      const posRa = after.indexOf('RAHASIA');
+      const posTe = after.indexOf('TERBATAS');
+      const pos = posRa < 0 ? posTe : (posTe < 0 ? posRa : Math.min(posRa, posTe));
+      if (pos >= 0) {
+        // Cek ~20 karakter sebelum posisi label di teks PENUH (mencakup teks
+        // sebelum kata kunci, mis. "tidak bersifat rahasia") untuk negasi.
+        const labelPos = i + kw.length + pos;
+        const before = n.slice(Math.max(0, labelPos - 20), labelPos).toUpperCase();
+        if (!(before.includes('TIDAK') || before.includes('BUKAN'))) {
+          push(`sifat/klasifikasi '${kw} …'`);
+          break;
+        }
+      }
+    }
+  }
+  // Stempel kapital berdiri sendiri (case-sensitive terhadap teks asli)
+  const tokens = String(teks || '').split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (tokens.includes('RAHASIA')) push("stempel 'RAHASIA'");
+  if (tokens.includes('TERBATAS')) push("stempel 'TERBATAS'");
+  for (const p of ['TOP SECRET', 'CONFIDENTIAL', 'RESTRICTED', 'FOR INTERNAL USE']) {
+    if (n.includes(p)) push(`label '${p}'`);
+  }
+
+  // Tier 2: frasa eksplisit "informasi yang dikecualikan" & rahasia khusus
+  if (n.includes('INFORMASI YANG DIKECUALIKAN')) push("frasa 'informasi yang dikecualikan'");
+  for (const p of ['RAHASIA JABATAN', 'RAHASIA DINAS', 'RAHASIA DAGANG', 'RAHASIA PERUSAHAAN', 'RAHASIA BANK', 'RAHASIA MEDIS', 'RAHASIA KORESPONDENSI', 'RAHASIA KOMERSIAL']) {
+    if (n.includes(p)) push(`frasa '${p.toLowerCase()}'`);
+  }
+  for (const p of ['DATA NASABAH', 'REKAM MEDIS', 'HANYA UNTUK INTERNAL', 'TIDAK UNTUK DIPUBLIKASIKAN']) {
+    if (n.includes(p)) push(`frasa '${p.toLowerCase()}'`);
+  }
+
+  // Tier 3: istilah keamanan negara
+  for (const p of ['INTELIJEN NEGARA', 'KEAMANAN NEGARA', 'PERTAHANAN NEGARA', 'OPERASI MILITER', 'MATA-MATA', 'PENYADAPAN', 'PERSENJATAAN', 'AMUNISI']) {
+    if (n.includes(p)) push(`istilah '${p.toLowerCase()}'`);
+  }
+
+  // Tier 4: data pribadi massal
+  const nik = countNIK(teks);
+  if (nik >= 3) push(`daftar NIK massal (${nik} NIK)`);
+  for (const kw of ['DAFTAR NIK', 'DAFTAR NPWP', 'DATA PENDUDUK']) {
+    const i = n.indexOf(kw);
+    if (i >= 0) {
+      const after = n.slice(i + kw.length, i + kw.length + 100);
+      if (after.includes('RAHASIA') || after.includes('TERBATAS')) {
+        push(`'${kw.toLowerCase()}' dengan klasifikasi rahasia`);
+        break;
+      }
+    }
+  }
+
+  return alasan;
+}
+
+// Ekstrak kandidat kode klasifikasi dari teks (pola segmen digit 1–3 dipisah
+// titik, MINIMAL 2 segmen; batas kata non-digit di kedua sisi). Diselaraskan
+// dengan backend/src/dikecualikan.rs (kode_kandidat). "10.03.2026" (tanggal)
+// → kandidat maximal "10.03.202" diikuti digit → bukan kode utuh → aman.
+function kodeKandidat(teks) {
+  const s = String(teks || '');
+  const out = [];
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const ch = s[i];
+    if (ch < '0' || ch > '9') {
+      i++;
+      continue;
+    }
+    // Batas kiri: karakter sebelum digit awal bukan digit
+    if (i > 0 && s[i - 1] >= '0' && s[i - 1] <= '9') {
+      i++;
+      continue;
+    }
+    // Segmen pertama: 1–3 digit
+    let j = i;
+    let segLen = 0;
+    while (j < n && s[j] >= '0' && s[j] <= '9' && segLen < 3) {
+      j++;
+      segLen++;
+    }
+    let kode = s.slice(i, j);
+    let segmen = 1;
+    let k = j;
+    // Segmen berikutnya: '.' + 1–3 digit
+    while (k < n && s[k] === '.' && k + 1 < n && s[k + 1] >= '0' && s[k + 1] <= '9') {
+      let m = k + 1;
+      let slen = 0;
+      while (m < n && s[m] >= '0' && s[m] <= '9' && slen < 3) {
+        m++;
+        slen++;
+      }
+      kode += '.' + s.slice(k + 1, m);
+      segmen++;
+      k = m;
+    }
+    // Batas kanan: karakter setelah kode bukan digit
+    const boundary = k >= n || !(s[k] >= '0' && s[k] <= '9');
+    if (segmen >= 2 && boundary) {
+      out.push(kode);
+    }
+    i = k;
+  }
+  return out;
+}
+
+// Deteksi kode klasifikasi SENSITIF (per SKKAD: Rahasia/Sangat Rahasia/Terbatas)
+// yang tertulis di dalam teks naskah. `kodeSet` = Set kode sensitif (dari
+// endpoint /api/dikecualikan/kode-rahasia, di-cache). Logika identik dengan
+// backend/src/dikecualikan.rs (deteksi_kode).
+function deteksiKodeRahasia(teks, kodeSet) {
+  const alasan = [];
+  const seen = new Set();
+  for (const kode of kodeKandidat(teks)) {
+    if (kodeSet && kodeSet.has(kode) && !seen.has(kode)) {
+      seen.add(kode);
+      alasan.push(`kode klasifikasi '${kode}' berklasifikasi keamanan per SKKAD`);
+    }
+  }
+  return alasan;
+}
+// ── DETEKSI SELESAI ───────────────────────────────────────────
+
+// ── Daftar kode klasifikasi sensitif (per SKKAD) ───────────────
+// Di-cache di chrome.storage.local agar guard lokal tidak bergantung server
+// (fallback: bila daftar belum tersedia, lapisan kode nonaktif — aturan teks
+// tetap jalan). Disinkronkan dari endpoint /api/dikecualikan/kode-rahasia.
+
+const KODE_SENSITIF_STORAGE = 'srikandi_kode_sensitif';
+const KODE_SENSITIF_TTL_MS = 24 * 60 * 60 * 1000; // refresh harian
+
+async function readKodeSensitifCache() {
+  try {
+    const stored = await chrome.storage.local.get([KODE_SENSITIF_STORAGE]);
+    const data = stored[KODE_SENSITIF_STORAGE];
+    if (data && Array.isArray(data.kode) && data.kode.length > 0) {
+      return data;
+    }
+  } catch (err) {}
+  return null;
+}
+
+async function getKodeSensitif() {
+  // 1. Cache valid (masih dalam TTL) → pakai langsung (tanpa request)
+  const cached = await readKodeSensitifCache();
+  if (cached && (!cached.ts || (Date.now() - cached.ts) < KODE_SENSITIF_TTL_MS)) {
+    return new Set(cached.kode);
+  }
+
+  // 2. Cache kosong/kedaluwarsa → muat dari server, simpan cache baru
+  try {
+    const resp = await fetchWithTimeout(`${API_BASE}/api/dikecualikan/kode-rahasia`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+    });
+    if (resp.ok) {
+      const body = await resp.json();
+      if (body && Array.isArray(body.kode) && body.kode.length > 0) {
+        await chrome.storage.local.set({
+          [KODE_SENSITIF_STORAGE]: { kode: body.kode, ts: Date.now() },
+        });
+        return new Set(body.kode);
+      }
+    }
+  } catch (err) {}
+
+  // 3. Fallback: pakai cache lama (walau kedaluwarsa) kalau ada; else Set kosong
+  if (cached) {
+    return new Set(cached.kode);
+  }
+  return new Set();
+}
+
 // ── Analisa Teks ──────────────────────────────────────────────
 // POST /api/chat — hasil langsung (tanpa task_id & polling).
 
 async function startAnalysis(teks) {
   try {
+    // 1. Deteksi deterministik (tanpa AI) indikasi informasi yang dikecualikan.
+    //    Lapis 1: aturan teks (label, frasa, NIK massal).
+    //    Lapis 2: kode klasifikasi sensitif per SKKAD yang tertulis di naskah
+    //    (daftar di-cache dari backend; bila offline, lapisan ini nonaktif).
+    //    Catatan: placeholder template SRIKANDI (${...}) sengaja TIDAK diblokir
+    //    — naskah asli SRIKANDI memang memuat variabel template (mis. ${perihal}),
+    //    dan teks tetap dikirim apa adanya (keputusan user 2026-08-09).
+    const alasan = deteksiInformasiDikecualikan(teks);
+    const kodeSensitif = await getKodeSensitif();
+    alasan.push(...deteksiKodeRahasia(teks, kodeSensitif));
+    if (alasan.length > 0) {
+      return { error: 'Demi keamanan, analisa dibatalkan. Naskah ini terdeteksi mengandung informasi yang dikecualikan: ' + alasan.join('; ') + '. Jangan kirim naskah rahasia atau naskah berisi informasi yang dikecualikan (Pasal 17 UU No. 14/2008) ke layanan AI.' };
+    }
     const keys = await getApiKeysFromStorage();
     const body = { message: teks, include_ringkasan: true };
     if (keys.length > 0) {

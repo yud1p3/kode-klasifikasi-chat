@@ -260,6 +260,28 @@
     feedbackError: null,
   };
 
+  // Badge metadata SKKAD per kandidat: 🔒 klasifikasi keamanan + 🗓️ retensi + ♻️ penyusutan
+  function buildSkadMetaHtml(item) {
+    const parts = [];
+    if (item.klasifikasi_keamanan && item.klasifikasi_keamanan !== '-') {
+      const cls = item.klasifikasi_keamanan === 'Sangat Rahasia'
+        ? 'sk-meta-badge sk-meta-red'
+        : item.klasifikasi_keamanan === 'Rahasia'
+          ? 'sk-meta-badge sk-meta-orange'
+          : item.klasifikasi_keamanan === 'Terbatas'
+            ? 'sk-meta-badge sk-meta-amber'
+            : 'sk-meta-badge sk-meta-green';
+      parts.push(`<span class="${cls}">🔒 ${escapeHtml(item.klasifikasi_keamanan)}</span>`);
+    }
+    if (item.retensi_aktif != null || item.retensi_inaktif != null) {
+      parts.push(`<span class="sk-meta-badge sk-meta-gray">🗓️ Aktif ${item.retensi_aktif ?? '–'} th · Inaktif ${item.retensi_inaktif ?? '–'} th</span>`);
+    }
+    if (item.penyusutan_akhir && item.penyusutan_akhir !== '-') {
+      parts.push(`<span class="sk-meta-badge sk-meta-gray">♻️ ${escapeHtml(item.penyusutan_akhir)}</span>`);
+    }
+    return parts.length > 0 ? `<div class="sk-meta-row">${parts.join('')}</div>` : '';
+  }
+
   function buildSubKlasifikasiHtml(subItems, selectedKode) {
     if (!subItems || subItems.length === 0) return '';
     // Max 3 sub-klasifikasi teratas
@@ -277,6 +299,7 @@
           <span class="sk-kode">${escapeHtml(item.kode)}</span>
           <span class="sk-desc">${escapeHtml(item.deskripsi)}</span>
           ${item.path ? `<span class="sk-path">${escapeHtml(item.path)}</span>` : ''}
+          ${buildSkadMetaHtml(item)}
         </label>
       `;
     }).join('');
@@ -331,13 +354,14 @@
           <label class="sk-field-label">Penjelasan AI:</label>
           <div class="sk-field-value sk-field-value-ml">${escapeHtml(result.explanation || '(kosong)')}</div>
         </div>
-        <!-- Kode Fungsi/Urusan -->
+        <!-- Kode Fungsi/Urusan (hasil utama) + metadata SKKAD -->
         <div class="sk-field">
           <label class="sk-field-label">Kode Fungsi/Urusan:</label>
           <div class="sk-field-value sk-field-code">
             <span class="sk-badge-fungsi">${escapeHtml(result.kode_klasifikasi)}</span>
             ${result.klasifikasi_deskripsi ? escapeHtml(result.klasifikasi_deskripsi) : ''}
           </div>
+          ${buildSkadMetaHtml(result.sub_klasifikasi?.[0] || result)}
         </div>
         <!-- Kode Subklasifikasi -->
         <div class="sk-field">
@@ -352,6 +376,7 @@
                 <span class="sk-numkode">${escapeHtml(item.kode)}</span>
                 <span class="sk-numdesc">${escapeHtml(item.deskripsi)}</span>
                 ${item.path ? `<span class="sk-numpath">${escapeHtml(item.path)}</span>` : ''}
+                ${buildSkadMetaHtml(item)}
               </div>
             `).join('')}
           </div>

@@ -22,7 +22,6 @@
   const btnSaveUrl = $('btn-save-url');
   const btnResetUrl = $('btn-reset-url');
   const apiUrlStatus = $('api-url-status');
-  const btnBukaWebApp = $('btn-buka-web-app');
   const btnBukaSrikandi = $('btn-buka-srikandi');
   const btnOpenSrikandi = $('btn-open-srikandi');
   const btnOpenWeb = $('btn-open-web');
@@ -345,12 +344,7 @@
     saveApiUrl(inputApiUrl.value);
   });
 
-  // ── Buka aplikasi web (login & koreksi) ──
-  btnBukaWebApp.addEventListener('click', () => {
-    chrome.tabs.create({ url: getWebAppUrl() });
-  });
-
-  // Tombol di footer / body (bila ada)
+  // ── Buka aplikasi web (login & koreksi) — tombol di footer ──
   if (btnOpenWeb) {
     btnOpenWeb.addEventListener('click', () => {
       chrome.tabs.create({ url: getWebAppUrl() });

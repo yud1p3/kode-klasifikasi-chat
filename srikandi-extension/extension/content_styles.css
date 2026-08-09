@@ -592,6 +592,61 @@
   line-height: 1.4;
 }
 
+/* Badge metadata SKKAD per kandidat (klasifikasi keamanan + retensi + penyusutan) */
+.sk-meta-row {
+  flex-basis: 100%;
+  margin-left: 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.sk-meta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid #d4d4d8;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.sk-meta-red {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.sk-meta-orange {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #c2410c;
+  font-weight: 600;
+}
+
+.sk-meta-amber {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  color: #b45309;
+  font-weight: 600;
+}
+
+.sk-meta-green {
+  background: #ecfdf5;
+  border-color: #6ee7b7;
+  color: #047857;
+  font-weight: 600;
+}
+
+.sk-meta-gray {
+  background: #fafafa;
+  color: #6b7280;
+}
+
 /* ── Feedback Area ───────────────────────────────────────────── */
 
 .feedback-area {
