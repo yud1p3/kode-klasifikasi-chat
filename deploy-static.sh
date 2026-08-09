@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================
-#  Deploy frontend statis kode-klasifikasi-meili ke nginx
+#  Deploy frontend statis kode-klasifikasi-chat ke nginx
 #  (domain ngrok stamina-deepen-activist.ngrok-free.dev)
 #
-#  Build → salin dist ke /var/www/kode-klasifikasi-meili → reload nginx
+#  Build → salin dist ke /var/www/kode-klasifikasi → reload nginx
 #  Catatan: build TANPA VITE_API_URL agar API memakai path relatif
 #  (same-origin, /api/* diproxy nginx ke backend :3100).
 #
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WEBROOT=/var/www/kode-klasifikasi-meili
+WEBROOT=/var/www/kode-klasifikasi
 
 echo "== 1/3 Build frontend (relatif API) =="
 (

@@ -2,16 +2,15 @@
 # ============================================================
 #  Start/Stop Aplikasi Kode Klasifikasi
 #  Backend :3100 (search via PostgreSQL pgvector) + Frontend :5174
-#  Dipakai: bash start-meili-app.sh [start|stop|status|restart]
-#  Catatan: nama script dipertahankan dari project (kode-klasifikasi-meili).
+#  Dipakai: bash start-app.sh [start|stop|status|restart]
 # ============================================================
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKEND_LOG=/tmp/meili-backend.log
-FRONTEND_LOG=/tmp/meili-frontend.log
-BACKEND_PID=/tmp/meili-backend.pid
-FRONTEND_PID=/tmp/meili-frontend.pid
+BACKEND_LOG=/tmp/kode-klasifikasi-backend.log
+FRONTEND_LOG=/tmp/kode-klasifikasi-frontend.log
+BACKEND_PID=/tmp/kode-klasifikasi-backend.pid
+FRONTEND_PID=/tmp/kode-klasifikasi-frontend.pid
 
 is_alive() {
   local pidfile="$1"
@@ -50,7 +49,7 @@ start() {
 }
 
 stop() {
-  echo "== Menghentikan aplikasi Meilisearch =="
+  echo "== Menghentikan aplikasi =="
   stop_one "backend :3100" "$BACKEND_PID"
   stop_one "frontend :5174" "$FRONTEND_PID"
 }

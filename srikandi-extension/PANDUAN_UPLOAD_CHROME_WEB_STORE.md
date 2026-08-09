@@ -1,7 +1,7 @@
 # 📦 Panduan Upload Ekstensi ke Chrome Web Store
 
 > **Ekstensi:** Analisa Naskah SRIKANDI
-> **Folder source:** `kode-klasifikasi-meili/srikandi-extension/extension`
+> **Folder source:** `kode-klasifikasi-chat/srikandi-extension/extension`
 > **Folder di Windows:** `C:\Users\yudi\srikandi-extension`
 > **Versi manifest:** MV3
 
@@ -35,9 +35,9 @@ Setelah backend publik, lakukan **4 perubahan di ekstensi**:
 
 ## 1. Deploy Backend ke VPS (ringkas)
 
-Script deploy untuk backend **baru** (Rust, PostgreSQL-only) ada di repo `kode-klasifikasi-meili`:
-- `deploy/` → `deploy-to-vps.sh`, `kode-klasifikasi-meili.service`, `nginx-kode-klasifikasi-vps.conf`, `db-setup-vps.sh`
-- `start-meili-app.sh` → jalankan lokal / referensi environment
+Script deploy untuk backend **baru** (Rust, PostgreSQL-only) ada di repo `kode-klasifikasi-chat`:
+- `deploy/` → `deploy-to-vps.sh`, `kode-klasifikasi.service`, `nginx-kode-klasifikasi-vps.conf`, `db-setup-vps.sh`
+- `start-app.sh` → jalankan lokal / referensi environment
 
 ```bash
 # Setelah service berjalan & nginx dikonfigurasi:
@@ -48,7 +48,7 @@ sudo certbot --nginx -d api.domain-anda.com
 curl https://api.domain-anda.com/api/health   # → {"status":"ok"}
 ```
 
-> ⚠️ **Catatan:** `PANDUAN_DEPLOY_VPS.md` di folder ini MASIH untuk arsitektur **lama** (Go API + Meilisearch). Backend sekarang **PostgreSQL-only** — ikuti README & `deploy/` di `kode-klasifikasi-meili`, bukan panduan lama itu.
+> ⚠️ **Catatan:** panduan deploy arsitektur **lama** (Go API + Meilisearch) di folder ini sudah **dihapus**. Backend sekarang **PostgreSQL-only** — ikuti README & `deploy/` di `kode-klasifikasi-chat`.
 
 ---
 

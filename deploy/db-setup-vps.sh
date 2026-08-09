@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# SETUP DATABASE VPS — kode-klasifikasi-meili
+# SETUP DATABASE VPS — kode-klasifikasi-chat
 # Jalankan di VPS:  bash db-setup-vps.sh   (bisa via nohup)
 #   • Install pgvector (apt; fallback build dari source)
 #   • Buat role kklas + database klasifikasi_arsip + ext vector

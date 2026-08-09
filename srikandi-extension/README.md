@@ -39,15 +39,12 @@ srikandi-extension/
 │   └── icons/
 ├── README.md                     ← dokumen ini
 ├── PANDUAN_UPLOAD_CHROME_WEB_STORE.md
-├── CATATAN_DISKUSI_2026-07-08.md
-├── deploy-to-vps.sh              ⚠️ legacy: deploy API Golang browser-klasifikasi-arsip (TIDAK dipakai untuk repo ini)
-├── setup-meilisearch-vps.sh      ⚠️ legacy: setup Meilisearch Golang (TIDAK dipakai)
-└── PANDUAN_DEPLOY_VPS.md         ⚠️ legacy: panduan deploy Golang (TIDAK dipakai)
+└── CATATAN_DISKUSI_2026-07-08.md
 ```
 
-File bertanda ⚠️ adalah peninggalan dari project `browser-klasifikasi-arsip`
-(Golang + Meilisearch) — **tidak berlaku** untuk backend baru (Rust + pgvector).
-Bisa dihapus bila tidak dibutuhkan.
+> File legacy dari project lama `browser-klasifikasi-arsip` (Golang + Meilisearch)
+> — `setup-meilisearch-vps.sh`, `deploy-to-vps.sh`, `PANDUAN_DEPLOY_VPS.md` —
+> sudah **dihapus** (tidak berlaku untuk backend baru Rust + pgvector).
 
 ---
 
@@ -134,7 +131,7 @@ Yang perlu disiapkan:
 
 1. **API server aktif** — jalankan backend repo ini (lihat README utama):
    ```bash
-   bash start-meili-app.sh
+   bash start-app.sh
    # backend di http://localhost:3100
    ```
 2. **Load extension** di Chrome: `chrome://extensions` → *Developer mode* →

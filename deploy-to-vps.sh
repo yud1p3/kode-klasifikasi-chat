@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================
-# DEPLOY KE VPS PRODUKSI — kode-klasifikasi-meili
+# DEPLOY KE VPS PRODUKSI — kode-klasifikasi-chat
 # Jalankan di WSL/LOCAL (bukan di VPS)
 #
 # Mengirim:
 #   • backend release binary  (~/<REMOTE_HOME>/kode-klasifikasi-chat)
-#   • frontend dist           (/var/www/kode-klasifikasi-meili/)
+#   • frontend dist           (/var/www/kode-klasifikasi/)
 #   • nginx config            (/etc/nginx/sites-available/)
 #   • systemd unit            (/etc/systemd/system/)
 #
@@ -24,8 +24,8 @@ VPS_USER="siapdev"                          # user SSH VPS (root / siapdev / dsb
 VPS_IP="192.168.181.6"                      # IP atau hostname VPS
 SSH_KEY="$HOME/siap_key.pem"                # SSH private key (sudah di ssh-agent)
 SSH_PORT="22"
-REMOTE_HOME="apps/kode-klasifikasi-meili"   # folder app di $HOME VPS
-WEBROOT="/var/www/kode-klasifikasi-meili"
+REMOTE_HOME="apps/kode-klasifikasi"   # folder app di $HOME VPS
+WEBROOT="/var/www/kode-klasifikasi"
 BACKEND_PORT="3000"                         # port backend Rust di VPS (harus sama dgn nginx conf)
 # ────────────────────────────────────────────────────────────
 
@@ -34,7 +34,7 @@ SSH_OPTS=(-i "$SSH_KEY" -p "$SSH_PORT")
 RSYNC_E="-e ssh -i $SSH_KEY -p $SSH_PORT"
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║  DEPLOY kode-klasifikasi-meili KE VPS                    ║"
+echo "║  DEPLOY kode-klasifikasi-chat KE VPS                    ║"
 echo "║  $VPS_USER@$VPS_IP"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo
@@ -110,16 +110,16 @@ sed "s/__BACKEND_PORT__/$BACKEND_PORT/g" \
 scp "${SSH_OPTS[@]}" /tmp/nginx-kode-klasifikasi-vps.conf "$VPS_USER@$VPS_IP":/tmp/
 rm -f /tmp/nginx-kode-klasifikasi-vps.conf
 ssh "${SSH_OPTS[@]}" "$VPS_USER@$VPS_IP" \
-    "sudo mv /tmp/nginx-kode-klasifikasi-vps.conf /etc/nginx/sites-available/kode-klasifikasi-meili.conf"
+    "sudo mv /tmp/nginx-kode-klasifikasi-vps.conf /etc/nginx/sites-available/kode-klasifikasi.conf"
 
 echo "   • Systemd unit (substitusi user/path)"
 sed -e "s/__VPS_USER__/$VPS_USER/g" \
     -e "s/__REMOTE_HOME__/$REMOTE_HOME/g" \
-    "$LOCAL_DIR/deploy/kode-klasifikasi-meili.service" > /tmp/kode-klasifikasi-meili.service
-scp "${SSH_OPTS[@]}" /tmp/kode-klasifikasi-meili.service "$VPS_USER@$VPS_IP":/tmp/
-rm -f /tmp/kode-klasifikasi-meili.service
+    "$LOCAL_DIR/deploy/kode-klasifikasi.service" > /tmp/kode-klasifikasi.service
+scp "${SSH_OPTS[@]}" /tmp/kode-klasifikasi.service "$VPS_USER@$VPS_IP":/tmp/
+rm -f /tmp/kode-klasifikasi.service
 ssh "${SSH_OPTS[@]}" "$VPS_USER@$VPS_IP" \
-    "sudo mv /tmp/kode-klasifikasi-meili.service /etc/systemd/system/ && sudo systemctl daemon-reload"
+    "sudo mv /tmp/kode-klasifikasi.service /etc/systemd/system/ && sudo systemctl daemon-reload"
 
 echo "   • Template .env VPS → ~/$REMOTE_HOME/"
 scp "${SSH_OPTS[@]}" "$LOCAL_DIR/backend/.env.vps.example" "$VPS_USER@$VPS_IP":~/$REMOTE_HOME/
@@ -136,14 +136,13 @@ echo "   cd ~/$REMOTE_HOME && cp .env.vps.example .env && nano .env"
 echo "   # isi: DATABASE_URL VPS, GOOGLE_REDIRECT_URI ngrok VPS, JWT_SECRET baru, dst"
 echo ""
 echo "2. Aktifkan nginx + service:"
-echo "   sudo ln -sf /etc/nginx/sites-available/kode-klasifikasi-meili.conf /etc/nginx/sites-enabled/"
+echo "   sudo ln -sf /etc/nginx/sites-available/kode-klasifikasi.conf /etc/nginx/sites-enabled/"
 echo "   sudo nginx -t && sudo systemctl reload nginx"
-echo "   sudo systemctl enable --now kode-klasifikasi-meili"
-echo "   sudo systemctl status kode-klasifikasi-meili"
+echo "   sudo systemctl enable --now kode-klasifikasi"
+echo "   sudo systemctl status kode-klasifikasi"
 echo ""
 echo "3. Google Console — tambahkan redirect URI:"
 echo "   https://liqueur-douche-defuse.ngrok-free.dev/auth/callback"
 echo ""
 echo "4. Verifikasi:"
 echo "   curl http://127.0.0.1:$BACKEND_PORT/api/health"
-echo "   curl http://127.0.0.1:7700/health"

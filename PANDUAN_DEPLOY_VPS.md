@@ -1,4 +1,4 @@
-# 🚀 Panduan Migrasi ke VPS Produksi — kode-klasifikasi-meili
+# 🚀 Panduan Migrasi ke VPS Produksi — kode-klasifikasi-chat
 
 Migrasi aplikasi chat **Kode Klasifikasi Arsip** (Rust + React + PostgreSQL pgvector) dari WSL ke VPS produksi.
 
@@ -10,7 +10,7 @@ Migrasi aplikasi chat **Kode Klasifikasi Arsip** (Rust + React + PostgreSQL pgve
 
 ```
 Pengguna → ngrok (https://<domain-vps>.ngrok-free.dev) → nginx :80
-                                                          ├── / (statis)   → /var/www/kode-klasifikasi-meili/
+                                                          ├── / (statis)   → /var/www/kode-klasifikasi/
                                                           └── /api/*       → proxy 127.0.0.1:3000 (backend Rust)
                                                                              ├── PostgreSQL 17 + pgvector (search semantic)
                                                                              └── Gemini API (embedding + chat)
@@ -19,11 +19,11 @@ Pengguna → ngrok (https://<domain-vps>.ngrok-free.dev) → nginx :80
 | Komponen | Dari WSL | Tujuan VPS | Cara |
 |---|---|---|---|
 | **Database** (5.534 kode + embedding + feedback) | `pg_dump` | PostgreSQL VPS | §3 (sekali) |
-| **Backend binary** | `cargo build --release` | `~/kode-klasifikasi-meili/` | `deploy-to-vps.sh` |
-| **Frontend dist** | `npm run build` | `/var/www/kode-klasifikasi-meili/` | `deploy-to-vps.sh` |
+| **Backend binary** | `cargo build --release` | `~/apps/kode-klasifikasi/` | `deploy-to-vps.sh` |
+| **Frontend dist** | `npm run build` | `/var/www/kode-klasifikasi/` | `deploy-to-vps.sh` |
 | **Nginx conf** | `deploy/nginx-kode-klasifikasi-vps.conf` | `/etc/nginx/sites-available/` | `deploy-to-vps.sh` |
-| **Systemd unit** | `deploy/kode-klasifikasi-meili.service` | `/etc/systemd/system/` | `deploy-to-vps.sh` |
-| **.env** | — (buat manual di VPS) | `~/kode-klasifikasi-meili/.env` | §5 |
+| **Systemd unit** | `deploy/kode-klasifikasi.service` | `/etc/systemd/system/` | `deploy-to-vps.sh` |
+| **.env** | — (buat manual di VPS) | `~/apps/kode-klasifikasi/.env` | §5 |
 
 ---
 
@@ -53,7 +53,7 @@ source "$HOME/.cargo/env"
 ### 3a. Di WSL — buat dump
 
 ```bash
-cd ~/projects/kode-klasifikasi-meili
+cd ~/projects/kode-klasifikasi-chat
 pg_dump -h 127.0.0.1 -U postgres -d klasifikasi_arsip -Fc -f /tmp/klasifikasi_arsip.dump
 ls -lh /tmp/klasifikasi_arsip.dump   # ukuran bisa ratusan MB (embedding 5.534 baris)
 ```
@@ -161,10 +161,10 @@ Backend membaca `DATABASE_URL` dari `.env` — tidak ada variabel Meilisearch la
 
 ## 5. Konfigurasi .env di VPS
 
-`deploy-to-vps.sh` sudah mengirim template ke `~/kode-klasifikasi-meili/.env.vps.example`. Di VPS:
+`deploy-to-vps.sh` sudah mengirim template ke `~/apps/kode-klasifikasi/.env.vps.example`. Di VPS:
 
 ```bash
-cd ~/kode-klasifikasi-meili
+cd ~/apps/kode-klasifikasi
 cp .env.vps.example .env
 nano .env
 ```
@@ -194,22 +194,22 @@ VPS_USER="root"
 VPS_IP="203.0.113.10"
 SSH_KEY="$HOME/.ssh/key-vps"
 SSH_PORT="22"
-REMOTE_HOME="kode-klasifikasi-meili"
-WEBROOT="/var/www/kode-klasifikasi-meili"
+REMOTE_HOME="apps/kode-klasifikasi"   # relatif ke $HOME VPS
+WEBROOT="/var/www/kode-klasifikasi"
 BACKEND_PORT="3000"
 ```
 
 ### 6b. Jalankan (dari WSL)
 
 ```bash
-cd ~/projects/kode-klasifikasi-meili
+cd ~/projects/kode-klasifikasi-chat
 eval $(ssh-agent -s) && ssh-add ~/.ssh/key-vps
 bash deploy-to-vps.sh
 ```
 
 Script otomatis: build frontend (API relatif) → build backend release → sync binary, dist, nginx conf, systemd unit → tampilkan langkah selanjutnya.
 
-> **Catatan kompatibilitas binary:** binary Rust hasil build di WSL Debian bisa langsung jalan di VPS Debian/Ubuntu x86_64 (glibc sama). Bila VPS pakai distro lain / arsitektur beda → build di VPS saja: `cd ~/kode-klasifikasi-meili/backend && cargo build --release` (butuh Rust di VPS).
+> **Catatan kompatibilitas binary:** binary Rust hasil build di WSL Debian bisa langsung jalan di VPS Debian/Ubuntu x86_64 (glibc sama). Bila VPS pakai distro lain / arsitektur beda → build di VPS saja: `cd ~/apps/kode-klasifikasi/backend && cargo build --release` (butuh Rust di VPS).
 
 ### 6c. Aktifkan nginx + systemd (di VPS)
 
@@ -230,16 +230,16 @@ sudo rm -f /etc/nginx/sites-enabled/klasifikasi-arsip.conf
 sudo rm -f /etc/nginx/sites-enabled/klas-arsip-webid.conf
 
 # Lalu aktifkan situs chatbot + reload
-sudo ln -sf /etc/nginx/sites-available/kode-klasifikasi-meili.conf /etc/nginx/sites-enabled/
+sudo ln -sf /etc/nginx/sites-available/kode-klasifikasi.conf /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 
 # Verifikasi: sekarang harusnya HTML chatbot (bukan browser-klasifikasi)
 curl -s http://127.0.0.1/ | grep -o '<title>[^<]*</title>'
 
 # Backend service
-sudo systemctl enable --now kode-klasifikasi-meili
-sudo systemctl status kode-klasifikasi-meili   # aktif & running
-journalctl -u kode-klasifikasi-meili -n 30 --no-pager   # cek log startup
+sudo systemctl enable --now kode-klasifikasi
+sudo systemctl status kode-klasifikasi   # aktif & running
+journalctl -u kode-klasifikasi -n 30 --no-pager   # cek log startup
 ```
 
 Cek log startup — harusnya:
@@ -313,7 +313,7 @@ curl -s https://liqueur-douche-defuse.ngrok-free.dev/api/dikecualikan/kode-rahas
 bash deploy-to-vps.sh
 
 # Di VPS:
-sudo systemctl restart kode-klasifikasi-meili
+sudo systemctl restart kode-klasifikasi
 ```
 
 Script `deploy-to-vps.sh` hanya meng-update binary, dist, dan config — database **tidak disentuh** (tidak perlu migrasi ulang).
@@ -334,11 +334,37 @@ Script `deploy-to-vps.sh` hanya meng-update binary, dist, dan config — databas
 
 | Gejala | Cek |
 |---|---|
-| Backend tidak start | `journalctl -u kode-klasifikasi-meili -n 30 --no-pager` — perhatikan baris `WARNING` (env belum diisi) |
+| Backend tidak start | `journalctl -u kode-klasifikasi -n 30 --no-pager` — perhatikan baris `WARNING` (env belum diisi) |
 | `Gagal pencarian` / search error | `DATABASE_URL` salah, atau kolom `embedding` belum terisi (cek §4) |
 | Login gagal / redirect salah | URI di Google Console belum ditambah (§7); `redirect_uris` di `/api/auth/config` |
 | Login 400 `redirect_uri_mismatch` | `GOOGLE_REDIRECT_URI` di `.env` belum berisi domain VPS |
 | Feedback "secret salah" | Karakter `$`/`#`/spasi di `DELETE_SECRET` — bungkus `'...'` (§5) |
-| Nginx 502 | Backend mati: `sudo systemctl status kode-klasifikasi-meili`; port `BACKEND_PORT` cocok dengan proxy? |
+| Nginx 502 | Backend mati: `sudo systemctl status kode-klasifikasi`; port `BACKEND_PORT` cocok dengan proxy? |
 | Frontend blank / API ke localhost | Build frontend tidak boleh punya `VITE_API_URL` (script sudah `unset`) — rebuild |
 | Domain menampilkan aplikasi **lain** (mis. browser-klasifikasi) | Situs lama masih aktif dengan `server_name` domain yang sama — `ls /etc/nginx/sites-enabled/`, lalu hapus symlink situs lama (§6c) |
+
+---
+
+## 12. Migrasi penamaan (dari `kode-klasifikasi-meili` ke `kode-klasifikasi`)
+
+Mulai commit ini, path VPS & nama unit diseragamkan: `kode-klasifikasi-meili` → **`kode-klasifikasi`** (folder app `~/apps/kode-klasifikasi/`, webroot `/var/www/kode-klasifikasi/`, unit `kode-klasifikasi.service`, nginx `kode-klasifikasi.conf`).
+
+> ⚠️ **VPS yang sudah pernah di-deploy dengan nama lama tidak otomatis ikut berubah.** Deploy berikutnya (`deploy-to-vps.sh`) akan membuat folder/unit **baru** — yang lama tidak dihapus. Lakukan migrasi sekali saja di VPS (sambil service dimatikan):
+
+```bash
+# 1. Hentikan service lama & pindahkan data app (termasuk .env!)
+sudo systemctl stop kode-klasifikasi-meili
+mkdir -p ~/apps && mv ~/apps/kode-klasifikasi-meili ~/apps/kode-klasifikasi
+
+# 2. Pindahkan webroot frontend
+sudo mv /var/www/kode-klasifikasi-meili /var/www/kode-klasifikasi
+
+# 3. Hapus unit + nginx conf lama, aktifkan yang baru (sudah dikirim deploy berikutnya)
+sudo rm -f /etc/systemd/system/kode-klasifikasi-meili.service /etc/nginx/sites-available/kode-klasifikasi-meili.conf
+sudo rm -f /etc/nginx/sites-enabled/kode-klasifikasi-meili.conf
+sudo systemctl daemon-reload
+
+# 4. Jalankan deploy ulang, lalu aktifkan unit baru
+bash deploy-to-vps.sh          # dari WSL
+sudo systemctl enable --now kode-klasifikasi
+```
