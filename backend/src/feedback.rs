@@ -247,28 +247,6 @@ pub fn format_fewshot(examples: &[FewShotExample]) -> String {
     out
 }
 
-/// Format teks few-shot RINGKAS untuk prompt select_fungsi: hanya perihal naskah
-/// → kode terbaik arsiparis + path. Fungsi/Urusan bisa dibaca dari level-1 path.
-/// Dipakai SEBELUM pemilihan fungsi: teks mentah di-embed untuk mencari contoh
-/// mirip, lalu disuntikkan agar pemilihan FUNGSI ikut terpandu validasi arsiparis
-/// (select_fungsi sebelumnya buta terhadap feedback).
-pub fn format_fewshot_fungsi(examples: &[FewShotExample]) -> String {
-    if examples.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from("===== CONTOH VALIDASI ARSIPARIS (naskah serupa) =====\n");
-    for (i, e) in examples.iter().enumerate() {
-        let teks: String = e.teks.chars().take(120).collect();
-        let kb_d: String = e.kb_deskripsi.chars().take(100).collect();
-        let kb_p: String = e.kb_path.chars().take(200).collect();
-        out.push_str(&format!(
-            "{}. Naskah: \"{}\". Klasifikasi arsiparis: {} — {}. Path: {}.\n",
-            i + 1, teks, e.kode_terbaik, kb_d, kb_p
-        ));
-    }
-    out.push_str("Gunakan contoh ini sebagai panduan: bila naskah saat ini serupa dengan suatu contoh, pilih Fungsi/Urusan yang sesuai dengan PATH kode yang dikonfirmasi arsiparis (level pertama path = nama Fungsi/Urusan).\n");
-    out
-}
 
 /// Bangun klausa WHERE dari filter statistik. Mengembalikan (klausa "WHERE ...",
 /// klausa "AND ...") — yang kedua untuk query yang sudah punya WHERE sendiri.
@@ -476,29 +454,4 @@ mod tests {
         assert!(out.contains("Kode benar setelah koreksi arsiparis: 200.02.01 — B detail. Path: F2 > B."));
     }
 
-    #[test]
-    fn format_fewshot_fungsi_ringkas_dan_menyertakan_path() {
-        let ex = vec![FewShotExample {
-            teks: "undangan pendampingan pengelolaan resiko".into(),
-            kode_ai: "555.02.04.01.02".into(),
-            kode_terbaik: "060.07.05".into(),
-            ai_deskripsi: "Manajemen Resiko".into(),
-            ai_path: "KOMUNIKASI DAN INFROMATIKA > APLIKASI INFORMATIKA".into(),
-            kb_deskripsi: "Evaluasi Kinerja dan Reformasi Birokrasi".into(),
-            kb_path: "ORGANISASI DAN KETATALAKSANAAN > EVALUASI ORGANISASI DAN TATA LAKSANA > Evaluasi Kinerja dan Reformasi Birokrasi".into(),
-            similarity: 0.88,
-        }];
-        let out = format_fewshot_fungsi(&ex);
-        assert!(out.contains("Naskah: \"undangan pendampingan pengelolaan resiko\""));
-        assert!(out.contains("Klasifikasi arsiparis: 060.07.05 — Evaluasi Kinerja dan Reformasi Birokrasi"));
-        assert!(out.contains("ORGANISASI DAN KETATALAKSANAAN > EVALUASI"));
-        assert!(out.contains("level pertama path = nama Fungsi/Urusan"));
-        // Tidak menyertakan info "kode awal keliru" (tidak relevan utk pemilihan fungsi)
-        assert!(!out.contains("Kode awal (keliru)"));
-    }
-
-    #[test]
-    fn format_fewshot_fungsi_kosong_menghasilkan_string_kosong() {
-        assert_eq!(format_fewshot_fungsi(&[]), "");
-    }
 }

@@ -44,7 +44,6 @@ pub async fn select_fungsi(
     api_key: &str,
     text: &str,
     daftar_fungsi: &str,
-    fewshot: &str,
 ) -> anyhow::Result<(String, String, String)> {
     let client = reqwest::Client::new();
     let url = format!(
@@ -52,13 +51,9 @@ pub async fn select_fungsi(
         CHAT_MODEL, api_key
     );
     let daftar = daftar_fungsi;
-    // Few-shot (opsional): contoh validasi arsiparis pada naskah serupa, agar
-    // pemilihan FUNGSI ikut terpandu (bukan buta terhadap feedback).
-    let fewshot_section = if fewshot.trim().is_empty() {
-        String::new()
-    } else {
-        format!("{fewshot}\n")
-    };
+    // Tanpa few-shot: saat pemilihan fungsi, PERIHAL naskah belum terbentuk
+    // (select_fungsi-lah yang menghasilkan perihal), jadi contoh perihal-mirip
+    // dari feedback belum bisa dicocokkan secara bermakna.
     let prompt = format!(
         "Anda arsiparis. Dari teks naskah dinas berikut, tentukan SATU Fungsi/Urusan yang paling sesuai dengan SUBSTANSI MASALAH naskah (bukan bentuk surat), lalu tuliskan DUA varian perihal:\n\n\
          - perihal_lengkap: perihal naskah LENGKAP apa adanya (maks 1 kalimat, boleh memuat tanggal/tahun/nama/tempat sebagaimana tertulis di naskah).\n\
@@ -67,11 +62,10 @@ pub async fn select_fungsi(
          1. Bentuk dokumen (SOP, surat, juknis, laporan, undangan, berita acara, memo, surat edaran) BUKAN penentu klasifikasi. Klasifikasikan berdasarkan SUBSTANSI/ISI, bukan jenis dokumen. Contoh: \"SOP pelayanan perpustakaan\" → PERPUSTAKAAN (bukan ORGANISASI DAN KETATALAKSANAAN); \"juknis bantuan operasional sekolah\" → PENDIDIKAN (bukan KETATAUSAHAAN).\n\
          2. Jangan tertipu NAMA INSTANSI. Kop surat \"Dinas Perpustakaan dan Kearsipan\" TIDAK otomatis berarti KEARSIPAN — lihat isi: bila substansi layanan perpustakaan (perpustakaan, pustaka, pojok baca, literasi baca, layanan perpustakaan) → PERPUSTAKAAN.\n\
          3. Perhatikan SUBSTANSI kata kunci dalam teks: kata \"perpustakaan\", \"pustaka\", \"pojok baca\", \"literasi baca\", \"bahan pustaka\" jelas mengarah ke PERPUSTAKAAN; kata \"kearsipan\", \"arsip\", \"pengelolaan arsip\" mengarah ke KEARSIPAN.\n\n\
-         {fewshot_section}\
          Daftar Fungsi/Urusan:\n{daftar}\n\n\
          Teks naskah:\n{text}\n\n\
          Keluarkan HANYA JSON valid: {{\"fungsi\":\"NAMA PERSIS DARI DAFTAR\",\"perihal_inti\":\"perihal inti huruf kecil\",\"perihal_lengkap\":\"perihal lengkap apa adanya\"}}",
-        daftar = daftar, text = &text.chars().take(3000).collect::<String>(), fewshot_section = fewshot_section
+        daftar = daftar, text = &text.chars().take(3000).collect::<String>()
     );
     let body = serde_json::json!({
         "contents": [{"parts": [{"text": prompt}]}],

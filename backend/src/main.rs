@@ -22,9 +22,8 @@ use key_rotator::KeyRotator;
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Ambang similarity PERIHAL (embedding feedback vs query) — sesuai kesepakatan
-/// "hanya memilih perihal yang mirip". Dipakai untuk:
-/// 1) menyertakan contoh ke few-shot select_fungsi, dan
-/// 2) meng-inject kode_terbaik-nya ke daftar kandidat rerank.
+/// "hanya memilih perihal yang mirip". Dipakai untuk meng-inject kode_terbaik
+/// feedback (yang TIDAK lolos top-N) ke daftar kandidat rerank.
 /// Kalibrasi: feedback relevan 0.88–1.00; agak mirip ~0.72; tidak mirip
 /// 0.61–0.66 → ambang 0.70 menyeimbangkan keduanya.
 const FEWSHOT_PERIHAL_SIM_THRESHOLD: f64 = 0.70;
@@ -255,10 +254,10 @@ impl DeleteGuard {
     }
 }
 
-/// Ekstrak baris "Perihal:" / "Hal:" dari teks mentah (bila ada) sebagai query
-/// retrieval few-shot fungsi — jauh lebih selaras dengan perihal feedback daripada
-/// seluruh teks mentah (kop/footer bisa mendominasi embedding). Fallback: 3000
-/// karakter pertama teks (tanpa mengubah perilaku lama).
+/// Ekstrak baris "Perihal:" / "Hal:" dari teks mentah (bila ada) sebagai bahan
+/// embedding feedback — jauh lebih selaras dengan perihal daripada seluruh teks
+/// mentah (kop/footer bisa mendominasi embedding). Fallback: 3000 karakter
+/// pertama teks (tanpa mengubah perilaku lama).
 fn perihal_mentah(message: &str) -> String {
     for line in message.lines().take(80) {
         let l = line.trim();
@@ -287,8 +286,11 @@ fn perihal_mentah(message: &str) -> String {
 /// tidak pernah memuat keterangan semacam itu. Dikembalikan juga
 /// perihal_lengkap (detail apa adanya) untuk ditampilkan di UI & feedback.
 /// Fallback ke teks asli bila gagal / rate limit.
+/// Tanpa few-shot: saat pemilihan fungsi, PERIHAL naskah belum terbentuk
+/// (select_fungsi-lah yang menghasilkan perihal), jadi contoh perihal-mirip
+/// dari feedback belum bisa dicocokkan secara bermakna.
 /// Catatan: setiap pemanggilan select_fungsi menghabiskan 1 kuota chat.
-async fn build_embed_query(state: &AppState, api_keys: &[String], message: &str, fewshot_fungsi: &str) -> (String, String, String) {
+async fn build_embed_query(state: &AppState, api_keys: &[String], message: &str) -> (String, String, String) {
     // Baca Fungsi/Urusan induk langsung dari DB (distinct level-1 path)
     let daftar_fungsi: String = match sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT trim(deskripsi) FROM klasifikasi_embedding WHERE LENGTH(kode) = 3 ORDER BY 1"
@@ -307,8 +309,7 @@ async fn build_embed_query(state: &AppState, api_keys: &[String], message: &str,
         .try_all_prefer(api_keys, |key| {
             let msg = message.to_string();
             let df = daftar_fungsi.clone();
-            let ff = fewshot_fungsi.to_string();
-            async move { gemini::select_fungsi(&key, &msg, &df, &ff).await }
+            async move { gemini::select_fungsi(&key, &msg, &df).await }
         })
         .await
     {
@@ -334,7 +335,7 @@ async fn build_embed_query(state: &AppState, api_keys: &[String], message: &str,
 /// diambil dari level-1 PATH kode yang dikonfirmasi/dikoreksi arsiparis
 /// (deterministik, gratis); perihal diprioritaskan perihal_inti (hasil chat,
 /// sudah bersih) → perihal lengkap → baris "Perihal:"/"Hal:" → teks mentah.
-/// Menghemat 1 chat (select_fungsi) + 1 embed (few-shot) per feedback, namun
+/// Menghemat 1 chat (select_fungsi) + 1 embed per feedback, namun
 /// tetap berada di ruang "FUNGSI > perihal" yang sama dengan query chat.
 /// Bila kode tidak ditemukan di dataset → fallback teks mentah (perilaku lama).
 async fn embed_text_feedback(state: &AppState, kode: &str, perihal_inti: &str, perihal: &str, msg: &str) -> String {
@@ -358,49 +359,6 @@ async fn embed_text_feedback(state: &AppState, kode: &str, perihal_inti: &str, p
         return format!("{} > {}", fungsi, p.chars().take(300).collect::<String>());
     }
     msg.chars().take(3000).collect()
-}
-
-/// Hitung teks few-shot untuk select_fungsi: embed perihal mentah (baris
-/// "Perihal:"/"Hal:" bila ada) → cari feedback dengan perihal mirip → filter
-/// ambang FEWSHOT_PERIHAL_SIM_THRESHOLD → format ringkas. HANYA dipakai jalur
-/// chat (jalur submit feedback menyusun embedding tanpa Gemini — lihat
-/// embed_text_feedback). Bila gagal / tak ada yang mirip → String kosong
-/// (perilaku tanpa panduan).
-async fn fewshot_fungsi_text(state: &AppState, api_keys: &[String], message: &str) -> String {
-    let raw_trunc = perihal_mentah(message);
-    match state
-        .key_rotator
-        .try_all_prefer(api_keys, |key| {
-            let t = raw_trunc.clone();
-            async move { gemini::embed_text(&key, &t).await }
-        })
-        .await
-    {
-        Ok((emb, _)) => {
-            state.quota.record_embed(1);
-            match feedback::fetch_fewshot(&state.db, &emb).await {
-                Ok(ex) => {
-                    let mirip: Vec<feedback::FewShotExample> = ex
-                        .into_iter()
-                        .filter(|e| e.similarity >= FEWSHOT_PERIHAL_SIM_THRESHOLD)
-                        .collect();
-                    if !mirip.is_empty() {
-                        let kodes: Vec<&str> = mirip.iter().map(|e| e.kode_terbaik.as_str()).collect();
-                        eprintln!("🌐 Few-shot fungsi: {} contoh perihal mirip: {}", mirip.len(), kodes.join(", "));
-                    }
-                    feedback::format_fewshot_fungsi(&mirip)
-                }
-                Err(e) => {
-                    eprintln!("fewshot fungsi fetch error: {e}");
-                    String::new()
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("embed few-shot fungsi gagal (dilewati): {e}");
-            String::new()
-        }
-    }
 }
 
 /// Ganti prefix "Perihal: ..." pada kalimat penjelasan agar SELALU konsisten
@@ -472,10 +430,10 @@ async fn chat(
 
     // Proaktif: cek kuota free (RPM/RPD) SEBELUM memanggil Gemini,
     // agar tidak sampai kena error 429 dari Google.
-    // Estimasi call: 2 chat (select_fungsi + rerank) + 2 embed
-    // (teks mentah utk few-shot fungsi + query "FUNGSI > perihal_inti").
+    // Estimasi call: 2 chat (select_fungsi + rerank) + 1 embed
+    // (query "FUNGSI > perihal_inti" — tanpa embed few-shot fungsi).
     let chat_calls_estimate: u32 = 2;
-    if let Err((wait, why)) = state.quota.check(chat_calls_estimate, 2) {
+    if let Err((wait, why)) = state.quota.check(chat_calls_estimate, 1) {
         eprintln!("⏳ Kuota free block: {why}, tunggu {wait} detik");
         return HttpResponse::TooManyRequests().json(ErrorResponse {
             error: format!(
@@ -485,13 +443,11 @@ async fn chat(
         });
     }
 
-    // Few-shot untuk select_fungsi (lihat fewshot_fungsi_text): pemilihan FUNGSI
-    // ikut terpandu validasi arsiparis. Bila gagal / tak ada yang mirip → dilewati.
-    let fewshot_fungsi = fewshot_fungsi_text(&state, &keys, message).await;
-
     // Susun teks query embedding — dipakai juga saat menyimpan feedback
-    // (build_embed_query) agar few-shot dicocokkan dalam ruang embedding yang sama.
-    let (embed_query, perihal_lengkap, perihal_inti) = build_embed_query(&state, &keys, message, &fewshot_fungsi).await;
+    // (build_embed_query) agar feedback berada di ruang embedding yang sama.
+    // Tanpa few-shot: perihal naskah belum ada saat pemilihan fungsi, jadi
+    // contoh perihal-mirip dari feedback belum bisa dicocokkan secara bermakna.
+    let (embed_query, perihal_lengkap, perihal_inti) = build_embed_query(&state, &keys, message).await;
 
     let embedding = match state.key_rotator.try_all_prefer(&keys, |key| {
         let msg = embed_query.clone();
