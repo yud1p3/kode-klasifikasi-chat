@@ -16,6 +16,7 @@ anyhow = "1"
 actix-multipart = "0.8.0"
 futures = "0.3.33"
 jsonwebtoken = "9"
+pdf-inspector = "0.1.7"
 
 [profile.release]
 opt-level = 2

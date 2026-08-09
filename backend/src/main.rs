@@ -482,50 +482,123 @@ async fn chat(
 }
 
 
-/// Ekstrak teks PDF via poppler (pdftotext).
-/// Dipakai sebagai fallback untuk PDF SRIKANDI yang ToUnicode-nya rusak
-/// (pdf.js menghasilkan karakter garbled, poppler membaca benar).
+/// Hapus pola penanda halaman "N / N" berulang yang menempel di AKHIR teks
+/// (sisa footer TCPDF, mis. "...BSSN).  1 / 1 1 / 1"). Footer selalu di ujung
+/// dokumen, jadi hanya menyentuh suffix — tidak mengganggu substansi naskah.
+fn strip_trailing_page_markers(mut s: String) -> String {
+    loop {
+        let t = s.trim_end();
+        let b = t.as_bytes();
+        let n = b.len();
+        // Pola akhir: ... <digit> ' ' '/' ' ' <digit>
+        if n >= 5 && b[n - 1].is_ascii_digit() && b[n - 2] == b' ' && b[n - 3] == b'/'
+            && b[n - 4] == b' ' && b[n - 5].is_ascii_digit()
+        {
+            s = t[..n - 5].trim_end().to_string();
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+/// Bersihkan boilerplate footer TCPDF (www.tcpdf.org) yang kadang dobel di
+/// naskah SRIKANDI (mis. "Powered by TCPDF ... 1 / 1 1 / 1"). Hanya menyentuh
+/// footer, bukan substansi naskah.
+fn bersihkan_footer_tcpdf(s: &str) -> String {
+    let tanpa_tcpdf = s.replace("Powered by TCPDF (www.tcpdf.org)", "");
+    strip_trailing_page_markers(tanpa_tcpdf)
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// Ekstrak teks PDF via pdf-inspector (crate Rust in-process, tanpa poppler).
+/// Output GFM Markdown terstruktur (heading, tabel) — lebih baik untuk AI
+/// daripada teks polos; tetap dikembalikan sebagai `{text}` agar kontrak API
+/// dengan extension TIDAK berubah.
+/// Dipakai sebagai pengganti anydoc (yang membungkus pdf-inspector untuk PDF)
+/// — hasil IDENTIK karena anydoc mendelegasikan 100% pemrosesan PDF ke
+/// pdf-inspector, namun tanpa membawa parser docx/xls/pptx yang tidak kita
+/// pakai (~147 paket dependensi). Terbukti membaca PDF SRIKANDI bertanda
+/// tangan elektronik dengan kualitas setara, cepat, tanpa dependensi sistem
+/// (`poppler-utils`), dan tanpa spawn proses.
 async fn extract_pdf(mut payload: Multipart) -> HttpResponse {
     use actix_web::web::BytesMut;
     use futures::StreamExt;
 
     // Terbuka untuk semua (bagian dari alur chat tanpa login).
-    // Simpan file multipart ke temp
-    let tmp_path = std::env::temp_dir().join(format!("kkl_upload_{}.pdf", std::process::id()));
+    // Baca seluruh bytes multipart ke memory — pdf-inspector bekerja in-memory,
+    // tanpa temp file (tidak seperti pdftotext yang butuh path file).
+    // Batas ukuran 20 MB: lindungi memory dari upload berlebihan (PDF naskah
+    // dinas jarang melewati beberapa MB).
+    const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
     let mut buf = BytesMut::new();
     while let Some(Ok(mut field)) = payload.next().await {
         while let Some(Ok(chunk)) = field.next().await {
             buf.extend_from_slice(&chunk);
+            if buf.len() > MAX_UPLOAD_BYTES {
+                return HttpResponse::PayloadTooLarge().json(serde_json::json!({
+                    "error": "Ukuran file melebihi batas 20 MB."
+                }));
+            }
         }
     }
     if buf.is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "File kosong"}));
     }
-    if let Err(e) = std::fs::write(&tmp_path, &buf) {
-        return HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("Gagal simpan file: {e}")}));
-    }
 
-    // Jalankan pdftotext
-    let out = std::process::Command::new("pdftotext")
-        .args([tmp_path.to_str().unwrap(), "-"])
-        .output();
-
-    let _ = std::fs::remove_file(&tmp_path);
-
-    match out {
-        Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    // Parse PDF di thread pool (web::block): parse sinkron pdf-inspector tidak
+    // memblokir runtime async Actix, dan panic di library pihak ketiga
+    // (pdf-inspector masih v0.1.x) tidak menjatuhkan seluruh server.
+    let bytes = buf.to_vec();
+    // web::block mengembalikan Result<Result<PagesExtractionResult, PdfError>, BlockingError>:
+    // lapisan luar = status thread pool (panic/join), lapisan dalam = hasil pdf-inspector.
+    match web::block(move || pdf_inspector::extract_pages_markdown_mem(&bytes, None)).await {
+        Ok(Ok(res)) => {
+            // Gabung markdown per halaman (halaman scan → markdown kosong)
+            let md = res
+                .pages
+                .iter()
+                .map(|p| p.markdown.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let text = bersihkan_footer_tcpdf(&md);
             if text.is_empty() {
-                HttpResponse::BadRequest().json(serde_json::json!({"error": "Tidak ada teks yang bisa diekstrak dari PDF"}))
+                // Semua halaman tanpa teks: PDF scan (image-only) atau format tak dikenal
+                HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "Tidak ada teks yang bisa diekstrak dari PDF. Bila ini PDF hasil scan, tidak ada lapisan teks yang bisa dibaca — unggah naskah digital asli atau file DOCX."
+                }))
             } else {
                 HttpResponse::Ok().json(serde_json::json!({"text": text}))
             }
         }
-        Ok(o) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": format!("pdftotext gagal: {}", String::from_utf8_lossy(&o.stderr).chars().take(300).collect::<String>())
-        })),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": format!("pdftotext tidak tersedia: {e}. Install poppler-utils atau gunakan fallback pdf.js.")
+        Ok(Err(e)) => match e {
+            // File bukan PDF / format tidak dikenali
+            pdf_inspector::PdfError::NotAPdf(hint) => HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!("File yang diunggah bukan PDF atau formatnya tidak dikenali ({hint}).")
+            })),
+            // PDF terenkripsi / berpassword
+            pdf_inspector::PdfError::Encrypted => HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "PDF terenkripsi atau diproteksi kata sandi. Buka proteksinya terlebih dahulu, lalu unggah ulang."
+            })),
+            // PDF rusak / struktur tidak valid — user bisa coba file lain
+            pdf_inspector::PdfError::Parse(msg) => HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!("PDF rusak atau tidak valid: {msg}. Coba buka dengan aplikasi PDF lalu simpan ulang.")
+            })),
+            pdf_inspector::PdfError::InvalidStructure => HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Struktur PDF tidak valid. Coba buka dengan aplikasi PDF lalu simpan ulang, atau gunakan file lain."
+            })),
+            // Error IO / lainnya: tak terduga
+            other => HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Gagal ekstrak PDF: {other}")
+            })),
+        },
+        Err(block_err) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Terjadi kesalahan internal saat memproses PDF: {block_err}")
         })),
     }
 }
@@ -1295,6 +1368,28 @@ mod tests {
         assert!(g.record_fail("a@x").is_none());
         assert!(g.record_fail("a@x").is_none());
         assert_eq!(g.record_fail("a@x"), Some(900));
+    }
+
+    #[test]
+    fn footer_tcpdf_dobel_dibersihkan() {
+        let s = "Isi naskah\n\nDokumen ini telah ditandatangani secara elektronik menggunakan sertifikat elektronik yang diterbitkan oleh Balai Besar Sertifikasi Elektronik (BSrE), Badan Siber dan Sandi Negara (BSSN). Powered by TCPDF (www.tcpdf.org)Powered by TCPDF (www.tcpdf.org) 1 / 1 1 / 1";
+        let hasil = bersihkan_footer_tcpdf(s);
+        assert!(!hasil.contains("Powered by TCPDF"));
+        assert!(!hasil.contains("1 / 1"));
+        assert!(hasil.contains("BSSN).")); // teks sertifikat tetap utuh
+    }
+
+    #[test]
+    fn footer_bersih_tidak_berubah() {
+        let s = "Permohonan reset MFA akun pengguna.";
+        assert_eq!(bersihkan_footer_tcpdf(s), s);
+    }
+
+    #[test]
+    fn footer_strip_tidak_menyentuh_teks_awal() {
+        // Penanda "N / N" di TENGAH teks (bukan akhir) tidak boleh dihapus
+        let s = "Pertemuan 1 / 1 peserta hadir.";
+        assert!(bersihkan_footer_tcpdf(s).contains("1 / 1"));
     }
 
     #[test]

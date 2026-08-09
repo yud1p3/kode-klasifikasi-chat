@@ -980,7 +980,7 @@ function App() {
       const ext = file.name.split('.').pop()?.toLowerCase()
 
       if (ext === 'pdf') {
-        // Prioritaskan ekstraksi via backend (poppler): benar untuk PDF SRIKANDI
+        // Prioritaskan ekstraksi via backend (pdf-inspector): benar untuk PDF SRIKANDI
         // yang ToUnicode-nya rusak (pdf.js menghasilkan karakter garbled).
         const fd = new FormData()
         fd.append('file', file)

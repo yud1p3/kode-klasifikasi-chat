@@ -494,7 +494,7 @@ async function startAnalysis(teks) {
 }
 
 // ── Analisa File (PDF) ────────────────────────────────────────
-// PDF → POST /api/extract-pdf (poppler) → teks → POST /api/chat.
+// PDF → POST /api/extract-pdf (pdf-inspector) → teks → POST /api/chat.
 // DOCX diekstrak client-side di content script (mammoth) → ANALISA_TEKS.
 
 async function startAnalysisWithFile(fileName, fileBase64, fileExt) {

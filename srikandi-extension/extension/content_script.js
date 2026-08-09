@@ -915,7 +915,7 @@
       return;
     }
 
-    // PDF: kirim file ke backend (ekstraksi poppler) lalu analisa
+    // PDF: kirim file ke backend (ekstraksi pdf-inspector) lalu analisa
     showLoadingOverlay('Membaca file...');
     analysisState.status = 'loading';
 

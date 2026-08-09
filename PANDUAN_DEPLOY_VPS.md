@@ -33,7 +33,7 @@ Pengguna → ngrok (https://<domain-vps>.ngrok-free.dev) → nginx :80
 # Dependencies aplikasi
 sudo apt update && sudo apt install -y \
     postgresql-17 postgresql-17-pgvector \
-    poppler-utils nginx curl
+    nginx curl
 
 # Rust (untuk build — atau build di lokal lalu sync binary, lihat catatan §6)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

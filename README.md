@@ -8,7 +8,7 @@ Asisten AI berbasis **Rust + React + TypeScript** untuk mencari kode klasifikasi
 
 - **Pencarian Semantic** — Embedding 768 dimensi via Gemini `gemini-embedding-2` + pgvector cosine similarity
 - **Penjelasan AI** — Gemini memilih kode terbaik dari top-10 hasil, merangking ulang, dan menjelaskan alasannya
-- **Upload File PDF/DOCX** — Ekstrak teks langsung dari file: PDF via poppler (`pdftotext`) dengan fallback pdf.js, DOCX via mammoth
+- **Upload File PDF/DOCX** — Ekstrak teks langsung dari file: PDF via **pdf-inspector** (crate Rust in-process, tanpa dependensi sistem) dengan fallback pdf.js, DOCX via mammoth
 - **Chrome Extension SRIKANDI** — Ekstensi MV3 (`srikandi-extension/`) untuk menganalisa naskah langsung di halaman SRIKANDI: inject tombol "Analisa dengan AI", baca file DOCX/PDF, tampilkan hasil (perihal, penjelasan AI, kode klasifikasi), isi form otomatis, dan feedback 👍 anonim — memakai API repo ini (lihat `srikandi-extension/README.md`)
 - **Pemilihan Fungsi/Urusan** — Untuk setiap naskah (pendek maupun panjang), Gemini memilih salah satu dari Fungsi/Urusan induk (dibaca langsung dari database) + perihal inti yang dibersihkan dari nama orang, tempat/wilayah, dan keterangan waktu, lalu query embedding disusun sebagai `"FUNGSI > perihal"` agar hasil pencarian lebih akurat
 - **Tanpa Login untuk Chat & Feedback Positif** — chat dan konfirmasi 👍 bisa dipakai tanpa akun Google; feedback positif dicatat **anonim** bila tidak login (identitas ikut tercatat bila sedang login). Login bersifat **opsional** — hanya wajib untuk mengirim **koreksi kode klasifikasi** dan menghapus feedback (admin)
@@ -33,8 +33,7 @@ Asisten AI berbasis **Rust + React + TypeScript** untuk mencari kode klasifikasi
 └──────────────┘                  └──────┬───────┘
                                          │
                                          ├── Gemini Embedding API
-                                         ├── Gemini Chat API
-                                         └── poppler (pdftotext)
+                                         ├── Gemini Chat API                                          └── pdf-inspector (PDF → Markdown, in-process)
 ```
 
 ---
@@ -45,7 +44,7 @@ Asisten AI berbasis **Rust + React + TypeScript** untuk mencari kode klasifikasi
 - **Node.js** 24+
 - **PostgreSQL 17** + **pgvector** extension
 - **Google Gemini API Key** (free tier cukup, beberapa key untuk rotasi)
-- **poppler-utils** (untuk ekstraksi PDF di backend)
+- ~~poppler-utils~~ — **tidak diperlukan lagi** (ekstraksi PDF via crate `pdf-inspector`, pure Rust)
 
 ---
 
@@ -132,7 +131,7 @@ Catatan: `GEMINI_API_KEYS` adalah key **server**. Pengguna juga bisa menyimpan k
 |--------|------|-----------|
 | GET | `/api/health` | Health check |
 | POST | `/api/chat` | Chat klasifikasi (**tanpa login**; rate limit & kuota tetap berlaku) |
-| POST | `/api/extract-pdf` | Ekstrak teks dari file PDF via poppler (multipart, field `file`; **tanpa login**) |
+| POST | `/api/extract-pdf` | Ekstrak teks dari file PDF via pdf-inspector (multipart, field `file`; **tanpa login**) |
 | GET | `/api/feedback/stats` | Statistik feedback (terbuka, tanpa login); filter opsional `?perihal=...&status=validated\|rejected\|pending` |
 | DELETE | `/api/feedback/{id}` | Hapus feedback (khusus admin: `ADMIN_EMAILS` + body `{"password": "..."}` = `DELETE_SECRET`; anti brute-force: 5 gagal → 429 lockout 15 mnt) |
 | GET | `/api/me` | Info user login + `is_admin` |
@@ -182,10 +181,10 @@ Request bisa menyertakan key pengguna (multi-key, rotasi otomatis):
 Menerima multipart `file` (PDF), mengembalikan:
 
 ```json
-{"text": "isi teks hasil ekstraksi poppler"}
+{"text": "isi teks hasil ekstraksi (Markdown)"}
 ```
 
-Dipakai frontend sebagai jalur utama ekstraksi PDF karena menangani PDF SRIKANDI dengan tabel ToUnicode rusak (pdf.js menghasilkan karakter garbled, poppler membaca benar).
+Dipakai frontend sebagai jalur utama ekstraksi PDF (pdf-inspector menghasilkan Markdown terstruktur — heading, tabel — yang lebih baik untuk AI). pdf-inspector terbukti membaca PDF SRIKANDI bertanda tangan elektronik dengan kualitas setara poppler, lebih cepat, dan tanpa dependensi sistem. Sebelumnya dipakai anydoc (pembungkus pdf-inspector) — diganti ke pdf-inspector langsung karena hasil identik (anydoc mendelegasikan 100% pemrosesan PDF ke pdf-inspector) namun tanpa membawa parser docx/xls/pptx yang tidak dipakai (~147 paket dependensi).
 
 ---
 
@@ -197,7 +196,7 @@ Tersedia juga **Chrome Extension** (MV3, vanilla JS) di folder [`srikandi-extens
 - Chat & feedback 👍 **tanpa login** (anonim + `chat_id`); login Google & koreksi ✏️ diarahkan ke aplikasi web
 - **Isi ringkas hanya untuk extension** — extension mengirim `include_ringkasan:true`; versi web tidak, sehingga tidak ada perubahan perilaku web
 - Default API URL: `http://localhost:3100` (bisa diubah di Pengaturan popup)
-- DOCX diekstrak client-side (mammoth); PDF diekstrak backend (poppler)
+- DOCX diekstrak client-side (mammoth); PDF diekstrak backend (pdf-inspector, Rust in-process)
 
 Panduan lengkap: [`srikandi-extension/README.md`](srikandi-extension/README.md)
 
