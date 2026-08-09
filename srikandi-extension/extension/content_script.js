@@ -1216,6 +1216,7 @@
         kode_ai: kodeTerpilih,
         feedback_type: 'positive',
         perihal: result.perihal || '',
+        perihal_inti: result.perihal_inti || '',
         chat_id: getChatId(),
       };
     } else if (mode === 'koreksi' && correctedItem?.kode) {
@@ -1226,6 +1227,7 @@
         kode_koreksi: correctedItem.kode,
         alasan: alasan || '',
         perihal: result.perihal || '',
+        perihal_inti: result.perihal_inti || '',
         chat_id: getChatId(),
       };
     } else {

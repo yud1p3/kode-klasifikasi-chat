@@ -4,7 +4,7 @@ use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, middleware};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +20,19 @@ mod search;
 use key_rotator::KeyRotator;
 
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Ambang similarity PERIHAL (embedding feedback vs query) — sesuai kesepakatan
+/// "hanya memilih perihal yang mirip". Dipakai untuk:
+/// 1) menyertakan contoh ke few-shot select_fungsi, dan
+/// 2) meng-inject kode_terbaik-nya ke daftar kandidat rerank.
+/// Kalibrasi: feedback relevan 0.88–1.00; agak mirip ~0.72; tidak mirip
+/// 0.61–0.66 → ambang 0.70 menyeimbangkan keduanya.
+const FEWSHOT_PERIHAL_SIM_THRESHOLD: f64 = 0.70;
+
+/// Ambang similarity KODE DATASET vs query untuk injeksi ke daftar kandidat
+/// (lapisan kedua setelah FEWSHOT_PERIHAL_SIM_THRESHOLD). Kandidat top-10
+/// relevan biasanya 0.65–0.85; kode tak berhubungan umumnya di bawah 0.5.
+const FEWSHOT_INJECT_SIM_THRESHOLD: f64 = 0.5;
 
 #[derive(Debug, Deserialize)]
 struct ChatRequest {
@@ -104,6 +117,11 @@ struct ChatResponse {
     /// Ringkasan naskah (isi ringkas) — opsional; hanya muncul bila diminta (include_ringkasan=true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ringkasan: Option<String>,
+    /// Perihal inti (bersih, tanpa nama/tempat/waktu) hasil select_fungsi.
+    /// Diteruskan ke klien agar dipakai saat submit feedback — embedding feedback
+    /// tetap memakai perihal_inti tanpa perlu memanggil Gemini lagi.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    perihal_inti: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -237,6 +255,31 @@ impl DeleteGuard {
     }
 }
 
+/// Ekstrak baris "Perihal:" / "Hal:" dari teks mentah (bila ada) sebagai query
+/// retrieval few-shot fungsi — jauh lebih selaras dengan perihal feedback daripada
+/// seluruh teks mentah (kop/footer bisa mendominasi embedding). Fallback: 3000
+/// karakter pertama teks (tanpa mengubah perilaku lama).
+fn perihal_mentah(message: &str) -> String {
+    for line in message.lines().take(80) {
+        let l = line.trim();
+        let lower = l.to_lowercase();
+        let pos = if lower.starts_with("perihal:") {
+            Some(8)
+        } else if lower.starts_with("hal:") {
+            Some(4)
+        } else {
+            None
+        };
+        if let Some(p) = pos {
+            let v = l[p..].trim();
+            if !v.is_empty() {
+                return v.chars().take(300).collect();
+            }
+        }
+    }
+    message.chars().take(3000).collect()
+}
+
 /// Susun teks untuk embedding yang KONSISTEN dengan query chat:
 /// SELALU "FUNGSI > perihal_inti" via Gemini select_fungsi, baik naskah
 /// pendek maupun panjang. perihal_inti dibersihkan dari nama orang,
@@ -245,7 +288,7 @@ impl DeleteGuard {
 /// perihal_lengkap (detail apa adanya) untuk ditampilkan di UI & feedback.
 /// Fallback ke teks asli bila gagal / rate limit.
 /// Catatan: setiap pemanggilan select_fungsi menghabiskan 1 kuota chat.
-async fn build_embed_query(state: &AppState, api_keys: &[String], message: &str) -> (String, String) {
+async fn build_embed_query(state: &AppState, api_keys: &[String], message: &str, fewshot_fungsi: &str) -> (String, String, String) {
     // Baca Fungsi/Urusan induk langsung dari DB (distinct level-1 path)
     let daftar_fungsi: String = match sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT trim(deskripsi) FROM klasifikasi_embedding WHERE LENGTH(kode) = 3 ORDER BY 1"
@@ -264,24 +307,98 @@ async fn build_embed_query(state: &AppState, api_keys: &[String], message: &str)
         .try_all_prefer(api_keys, |key| {
             let msg = message.to_string();
             let df = daftar_fungsi.clone();
-            async move { gemini::select_fungsi(&key, &msg, &df).await }
+            let ff = fewshot_fungsi.to_string();
+            async move { gemini::select_fungsi(&key, &msg, &df, &ff).await }
         })
         .await
     {
         Ok(((fungsi, perihal_inti, perihal_lengkap), _)) if !fungsi.is_empty() && !perihal_inti.is_empty() => {
             eprintln!("Fungsi terpilih: {fungsi} | Perihal inti: {perihal_inti}");
             state.quota.record_chat(1);
-            (format!("{} > {}", fungsi, perihal_inti), perihal_lengkap)
+            (format!("{} > {}", fungsi, perihal_inti), perihal_lengkap, perihal_inti)
         }
         Ok(((_fungsi, _perihal_inti, perihal_lengkap), _)) => {
             // Gemini tetap dipanggil (kuota terpakai) meski field inti kosong
             state.quota.record_chat(1);
             eprintln!("select_fungsi: field inti kosong, pakai teks asli");
-            (message.to_string(), perihal_lengkap)
+            (message.to_string(), perihal_lengkap, String::new())
         }
         Err(e) => {
             eprintln!("select_fungsi gagal, pakai teks asli: {e}");
-            (message.to_string(), String::new())
+            (message.to_string(), String::new(), String::new())
+        }
+    }
+}
+
+/// Susun teks embedding feedback TANPA memanggil select_fungsi (Gemini): fungsi
+/// diambil dari level-1 PATH kode yang dikonfirmasi/dikoreksi arsiparis
+/// (deterministik, gratis); perihal diprioritaskan perihal_inti (hasil chat,
+/// sudah bersih) → perihal lengkap → baris "Perihal:"/"Hal:" → teks mentah.
+/// Menghemat 1 chat (select_fungsi) + 1 embed (few-shot) per feedback, namun
+/// tetap berada di ruang "FUNGSI > perihal" yang sama dengan query chat.
+/// Bila kode tidak ditemukan di dataset → fallback teks mentah (perilaku lama).
+async fn embed_text_feedback(state: &AppState, kode: &str, perihal_inti: &str, perihal: &str, msg: &str) -> String {
+    let fungsi = match feedback::lookup_kode(&state.db, kode).await {
+        Ok(Some((_d, path))) => path.split('>').next().map(str::trim).unwrap_or("").to_string(),
+        _ => String::new(),
+    };
+    if !fungsi.is_empty() {
+        let p = if !perihal_inti.trim().is_empty() {
+            perihal_inti.trim().to_string()
+        } else if !perihal.trim().is_empty() {
+            perihal.trim().to_string()
+        } else {
+            let m = perihal_mentah(msg);
+            if m.chars().count() > 5 {
+                m
+            } else {
+                msg.chars().take(3000).collect()
+            }
+        };
+        return format!("{} > {}", fungsi, p.chars().take(300).collect::<String>());
+    }
+    msg.chars().take(3000).collect()
+}
+
+/// Hitung teks few-shot untuk select_fungsi: embed perihal mentah (baris
+/// "Perihal:"/"Hal:" bila ada) → cari feedback dengan perihal mirip → filter
+/// ambang FEWSHOT_PERIHAL_SIM_THRESHOLD → format ringkas. HANYA dipakai jalur
+/// chat (jalur submit feedback menyusun embedding tanpa Gemini — lihat
+/// embed_text_feedback). Bila gagal / tak ada yang mirip → String kosong
+/// (perilaku tanpa panduan).
+async fn fewshot_fungsi_text(state: &AppState, api_keys: &[String], message: &str) -> String {
+    let raw_trunc = perihal_mentah(message);
+    match state
+        .key_rotator
+        .try_all_prefer(api_keys, |key| {
+            let t = raw_trunc.clone();
+            async move { gemini::embed_text(&key, &t).await }
+        })
+        .await
+    {
+        Ok((emb, _)) => {
+            state.quota.record_embed(1);
+            match feedback::fetch_fewshot(&state.db, &emb).await {
+                Ok(ex) => {
+                    let mirip: Vec<feedback::FewShotExample> = ex
+                        .into_iter()
+                        .filter(|e| e.similarity >= FEWSHOT_PERIHAL_SIM_THRESHOLD)
+                        .collect();
+                    if !mirip.is_empty() {
+                        let kodes: Vec<&str> = mirip.iter().map(|e| e.kode_terbaik.as_str()).collect();
+                        eprintln!("🌐 Few-shot fungsi: {} contoh perihal mirip: {}", mirip.len(), kodes.join(", "));
+                    }
+                    feedback::format_fewshot_fungsi(&mirip)
+                }
+                Err(e) => {
+                    eprintln!("fewshot fungsi fetch error: {e}");
+                    String::new()
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("embed few-shot fungsi gagal (dilewati): {e}");
+            String::new()
         }
     }
 }
@@ -355,10 +472,10 @@ async fn chat(
 
     // Proaktif: cek kuota free (RPM/RPD) SEBELUM memanggil Gemini,
     // agar tidak sampai kena error 429 dari Google.
-    // Estimasi call: selalu 2 chat (select_fungsi + rerank) + 1 embed,
-    // karena semua naskah (pendek & panjang) melewati select_fungsi.
+    // Estimasi call: 2 chat (select_fungsi + rerank) + 2 embed
+    // (teks mentah utk few-shot fungsi + query "FUNGSI > perihal_inti").
     let chat_calls_estimate: u32 = 2;
-    if let Err((wait, why)) = state.quota.check(chat_calls_estimate, 1) {
+    if let Err((wait, why)) = state.quota.check(chat_calls_estimate, 2) {
         eprintln!("⏳ Kuota free block: {why}, tunggu {wait} detik");
         return HttpResponse::TooManyRequests().json(ErrorResponse {
             error: format!(
@@ -368,9 +485,13 @@ async fn chat(
         });
     }
 
+    // Few-shot untuk select_fungsi (lihat fewshot_fungsi_text): pemilihan FUNGSI
+    // ikut terpandu validasi arsiparis. Bila gagal / tak ada yang mirip → dilewati.
+    let fewshot_fungsi = fewshot_fungsi_text(&state, &keys, message).await;
+
     // Susun teks query embedding — dipakai juga saat menyimpan feedback
     // (build_embed_query) agar few-shot dicocokkan dalam ruang embedding yang sama.
-    let (embed_query, perihal_lengkap) = build_embed_query(&state, &keys, message).await;
+    let (embed_query, perihal_lengkap, perihal_inti) = build_embed_query(&state, &keys, message, &fewshot_fungsi).await;
 
     let embedding = match state.key_rotator.try_all_prefer(&keys, |key| {
         let msg = embed_query.clone();
@@ -405,16 +526,17 @@ async fn chat(
     };
 
     // Few-shot: koreksi arsiparis tervalidasi yang naskahnya paling mirip query ini
-    let fewshot_text = match feedback::fetch_fewshot(&state.db, &embedding).await {
-        Ok(examples) => feedback::format_fewshot(&examples),
+    let fewshot_examples = match feedback::fetch_fewshot(&state.db, &embedding).await {
+        Ok(examples) => examples,
         Err(e) => {
             eprintln!("fewshot fetch error: {e}");
-            String::new()
+            Vec::new()
         }
     };
+    let fewshot_text = feedback::format_fewshot(&fewshot_examples);
 
     // Pencarian semantic: pgvector (PostgreSQL) — satu-satunya backend search
-    let results = match search::similarity_search(&state.db, &embedding, 10).await {
+    let mut results = match search::similarity_search(&state.db, &embedding, 10).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Search error: {e}");
@@ -424,6 +546,43 @@ async fn chat(
             });
         }
     };
+
+    // Injeksi few-shot: kode yang dikonfirmasi/dikoreksi arsiparis (kode_terbaik)
+    // yang TIDAK lolos top-N pencarian tetap dimasukkan ke daftar kandidat (dengan
+    // deskripsi & path asli dari dataset) bila cukup relevan dengan query. Tanpa
+    // ini, rerank hanya bisa memilih dari top-N semantic — sehingga feedback baru
+    // efektif bila kode hasil koreksinya kebetulan masuk kolam kandidat.
+    {
+        let existing: HashSet<String> = results.iter().map(|r| r.kode.clone()).collect();
+        let mut ingin: Vec<String> = Vec::new();
+        for ex in &fewshot_examples {
+            let k = ex.kode_terbaik.trim();
+            if !k.is_empty()
+                && ex.similarity >= FEWSHOT_PERIHAL_SIM_THRESHOLD
+                && !existing.contains(k)
+                && !ingin.iter().any(|x| x == k)
+            {
+                ingin.push(k.to_string());
+            }
+        }
+        if !ingin.is_empty() {
+            match search::fetch_by_kodes(&state.db, &embedding, &ingin).await {
+                Ok(extra) => {
+                    let mut injected: Vec<String> = Vec::new();
+                    for r in extra {
+                        if r.similarity >= FEWSHOT_INJECT_SIM_THRESHOLD {
+                            injected.push(r.kode.clone());
+                            results.push(r);
+                        }
+                    }
+                    if !injected.is_empty() {
+                        eprintln!("🔁 Few-shot inject: kode arsiparis ditambahkan ke kandidat: {}", injected.join(", "));
+                    }
+                }
+                Err(e) => eprintln!("fewshot inject error: {e}"),
+            }
+        }
+    }
 
     // Ringkasan (isi ringkas) hanya diminta oleh Chrome extension SRIKANDI
     let need_ring = body.include_ringkasan;
@@ -478,7 +637,12 @@ async fn chat(
         Some(ringkasan.trim().to_string())
     };
 
-    HttpResponse::Ok().json(ChatResponse { results: reranked, perihal, explanation, ringkasan })
+    let perihal_inti = if perihal_inti.trim().is_empty() {
+        None
+    } else {
+        Some(perihal_inti.trim().to_string())
+    };
+    HttpResponse::Ok().json(ChatResponse { results: reranked, perihal, explanation, ringkasan, perihal_inti })
 }
 
 
@@ -714,6 +878,10 @@ struct FeedbackRequest {
     /// Perihal naskah (hasil rerank AI saat chat) — dipakai di prompt validasi & statistik.
     #[serde(default)]
     perihal: Option<String>,
+    /// Perihal inti (bersih, tanpa nama/tempat/waktu) hasil select_fungsi saat chat.
+    /// Dipakai menyusun embedding feedback tanpa memanggil Gemini lagi.
+    #[serde(default)]
+    perihal_inti: Option<String>,
     /// Nama lengkap pengguna SRIKANDI (di-scrape extension dari halaman SRIKANDI).
     /// Dipakai sebagai nama tampilan feedback dari extension; identitas login
     /// Google tetap tercatat terpisah di user_sub/user_email bila user login.
@@ -800,6 +968,16 @@ async fn submit_feedback(
         .take(300)
         .collect();
 
+    // Perihal inti (bersih) dari hasil chat — dipakai embedding feedback (prioritas).
+    let perihal_inti: String = body
+        .perihal_inti
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(300)
+        .collect();
+
     // Feedback positif: TANPA WAJIB LOGIN — dicatat anonim bila user tidak
     // login; identitas tetap tercatat bila user kebetulan sedang login.
     // Nama tampilan: nama SRIKANDI (dari extension) bila ada, fallback nama Google.
@@ -812,17 +990,15 @@ async fn submit_feedback(
         let name = display_name(body.user_name.as_deref(), name.as_deref());
 
         // Embedding naskah (best-effort) — dipakai few-shot untuk query serupa.
-        // Teks embedding DISELARASKAN dengan query chat (build_embed_query):
-        // selalu "FUNGSI > perihal_inti", agar feedback positif bisa dicocokkan
-        // dalam ruang embedding yang sama dengan query (koreksi validated sudah
-        // melakukan ini; positif sebelumnya tidak pernah di-embed sehingga
-        // tidak pernah muncul di few-shot — sudah diperbaiki).
+        // Disusun TANPA memanggil select_fungsi (hemat 1 chat + 1 embed): fungsi
+        // dari level-1 path kode yang dikonfirmasi, perihal_inti dari hasil chat
+        // (bila ada). Tetap di ruang "FUNGSI > perihal" yang sama dengan query.
         // Pengaman: cek kuota proaktif (branch ini anonim & tanpa rate limiter).
         // Bila kuota tidak cukup, embedding dilewati — feedback TETAP tersimpan
         // (embedding NULL = tidak muncul di few-shot, tidak fatal).
         let mut emb_store: Option<String> = None;
-        if state.quota.check(1, 1).is_ok() {
-            let (embed_text, _pl) = build_embed_query(&state, &keys, msg).await;
+        if state.quota.check(0, 1).is_ok() {
+            let embed_text = embed_text_feedback(&state, &body.kode_ai, &perihal_inti, &perihal, msg).await;
             if let Ok((emb, _)) = state
                 .key_rotator
                 .try_all_prefer(&keys, |key| {
@@ -903,9 +1079,9 @@ async fn submit_feedback(
         }
         *last = now;
     }
-    // Estimasi: koreksi = 2 chat (select_fungsi saat menyusun teks embedding
-    // + validasi) + 1 embed, karena semua naskah melewati select_fungsi.
-    let chat_calls_estimate: u32 = 2;
+    // Estimasi: koreksi = 1 chat (validasi Gemini) + 1 embed (query feedback),
+    // karena embedding feedback disusun tanpa select_fungsi (fungsi dari path).
+    let chat_calls_estimate: u32 = 1;
     if let Err((wait, why)) = state.quota.check(chat_calls_estimate, 1) {
         eprintln!("⏳ Kuota block (feedback): {why}");
         return HttpResponse::TooManyRequests().json(ErrorResponse {
@@ -1023,12 +1199,11 @@ async fn submit_feedback(
     };
 
     // Embedding naskah (best-effort) — dipakai few-shot untuk query serupa.
-    // Teks embedding DISELARASKAN dengan query chat (build_embed_query):
-    // selalu "FUNGSI > perihal_inti", agar few-shot dicocokkan dalam ruang
-    // embedding yang sama dengan query.
+    // Disusun TANPA select_fungsi: fungsi dari level-1 path kode_terbaik,
+    // perihal_inti dari hasil chat (bila ada). Ruang sama dengan query chat.
     let mut emb_store: Option<String> = None;
     if status == "validated" {
-        let (embed_text, _perihal_lengkap) = build_embed_query(&state, &keys, msg).await;
+        let embed_text = embed_text_feedback(&state, &kode_terbaik, &perihal_inti, &perihal, msg).await;
         if let Ok((emb, _)) = state
             .key_rotator
             .try_all_prefer(&keys, |key| {
@@ -1369,6 +1544,20 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn perihal_mentah_mengambil_baris_perihal() {
+        let s = "PEMERINTAH KABUPATEN BLITAR\nDINAS PERPUSTAKAAN DAN KEARSIPAN\nPerihal: Undangan Pendampingan Pengelolaan Resiko\nisi naskah...";
+        assert_eq!(perihal_mentah(s), "Undangan Pendampingan Pengelolaan Resiko");
+    }
+
+    #[test]
+    fn perihal_mentah_dukung_hal_dan_fallback() {
+        assert_eq!(perihal_mentah("kop surat\nHal: Permohonan cuti tahunan\nisi"), "Permohonan cuti tahunan");
+        // Tanpa Perihal/Hal → fallback 3000 karakter pertama
+        let tanpa = perihal_mentah("isi naskah tanpa perihal");
+        assert_eq!(tanpa, "isi naskah tanpa perihal");
+    }
 
     #[test]
     fn delete_guard_mengunci_setelah_n_gagal() {

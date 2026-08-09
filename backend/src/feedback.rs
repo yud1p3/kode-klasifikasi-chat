@@ -160,6 +160,10 @@ pub struct FewShotExample {
     pub ai_path: String,
     pub kb_deskripsi: String,
     pub kb_path: String,
+    /// Similarity embedding perihal contoh vs query saat ini (1 - cosine distance).
+    /// Dipakai caller untuk memfilter: hanya pakai/inject contoh yang perihalnya
+    /// benar-benar mirip (kesepakatan "hanya memilih perihal yang mirip").
+    pub similarity: f64,
 }
 
 /// Ambil hingga 5 feedback TERVALIDASI yang NASKAHNYA PALING MIRIP dengan
@@ -176,11 +180,12 @@ pub async fn fetch_fewshot(db: &PgPool, embedding: &[f64]) -> Result<Vec<FewShot
         .map(|v| v.to_string())
         .collect::<Vec<_>>()
         .join(",");
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String, f64)>(
         "SELECT COALESCE(NULLIF(f.perihal,''), LEFT(f.naskah, 120)),
                 f.kode_ai, f.kode_terbaik,
                 COALESCE(ai.deskripsi,''), COALESCE(ai.path,''),
-                COALESCE(kb.deskripsi,''), COALESCE(kb.path,'')
+                COALESCE(kb.deskripsi,''), COALESCE(kb.path,''),
+                1 - (f.embedding <=> $1::vector) AS sim
          FROM klasifikasi_feedback f
          LEFT JOIN klasifikasi_embedding ai ON ai.kode = f.kode_ai
          LEFT JOIN klasifikasi_embedding kb ON kb.kode = f.kode_terbaik
@@ -203,6 +208,7 @@ pub async fn fetch_fewshot(db: &PgPool, embedding: &[f64]) -> Result<Vec<FewShot
             ai_path: r.4,
             kb_deskripsi: r.5,
             kb_path: r.6,
+            similarity: r.7,
         })
         .collect())
 }
@@ -238,6 +244,29 @@ pub fn format_fewshot(examples: &[FewShotExample]) -> String {
         }
     }
     out.push_str("Gunakan contoh ini sebagai panduan: bila naskah saat ini serupa dengan suatu contoh, prioritaskan kode klasifikasi yang telah dikonfirmasi/dikoreksi arsiparis tersebut.\n");
+    out
+}
+
+/// Format teks few-shot RINGKAS untuk prompt select_fungsi: hanya perihal naskah
+/// → kode terbaik arsiparis + path. Fungsi/Urusan bisa dibaca dari level-1 path.
+/// Dipakai SEBELUM pemilihan fungsi: teks mentah di-embed untuk mencari contoh
+/// mirip, lalu disuntikkan agar pemilihan FUNGSI ikut terpandu validasi arsiparis
+/// (select_fungsi sebelumnya buta terhadap feedback).
+pub fn format_fewshot_fungsi(examples: &[FewShotExample]) -> String {
+    if examples.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("===== CONTOH VALIDASI ARSIPARIS (naskah serupa) =====\n");
+    for (i, e) in examples.iter().enumerate() {
+        let teks: String = e.teks.chars().take(120).collect();
+        let kb_d: String = e.kb_deskripsi.chars().take(100).collect();
+        let kb_p: String = e.kb_path.chars().take(200).collect();
+        out.push_str(&format!(
+            "{}. Naskah: \"{}\". Klasifikasi arsiparis: {} — {}. Path: {}.\n",
+            i + 1, teks, e.kode_terbaik, kb_d, kb_p
+        ));
+    }
+    out.push_str("Gunakan contoh ini sebagai panduan: bila naskah saat ini serupa dengan suatu contoh, pilih Fungsi/Urusan yang sesuai dengan PATH kode yang dikonfirmasi arsiparis (level pertama path = nama Fungsi/Urusan).\n");
     out
 }
 
@@ -380,6 +409,7 @@ mod tests {
             ai_path: "KEUANGAN > LAPORAN".into(),
             kb_deskripsi: "Laporan Realisasi Anggaran (LRA)".into(),
             kb_path: "KEUANGAN > LAPORAN > LRA".into(),
+            similarity: 0.9,
         }];
         let out = format_fewshot(&ex);
         assert!(out.contains("Naskah: \"laporan realisasi anggaran triwulan\""));
@@ -406,6 +436,7 @@ mod tests {
             ai_path: "KEUANGAN > PENGAWASAN".into(),
             kb_deskripsi: "Hasil Pembinaan kapabilitas APIP".into(),
             kb_path: "KEUANGAN > PENGAWASAN > Hasil Pembinaan kapabilitas APIP".into(),
+            similarity: 0.95,
         }];
         let out = format_fewshot(&ex);
         assert!(out.contains(
@@ -426,6 +457,7 @@ mod tests {
                 ai_path: "F1".into(),
                 kb_deskripsi: "A".into(),
                 kb_path: "F1".into(),
+                similarity: 0.8,
             },
             FewShotExample {
                 teks: "naskah B".into(),
@@ -435,11 +467,38 @@ mod tests {
                 ai_path: "F2".into(),
                 kb_deskripsi: "B detail".into(),
                 kb_path: "F2 > B".into(),
+                similarity: 0.7,
             },
         ];
         let out = format_fewshot(&ex);
         assert!(out.contains("dikonfirmasi arsiparis): 100.01"));
         assert!(out.contains("Kode awal (keliru): 200.02 — B. Path: F2."));
         assert!(out.contains("Kode benar setelah koreksi arsiparis: 200.02.01 — B detail. Path: F2 > B."));
+    }
+
+    #[test]
+    fn format_fewshot_fungsi_ringkas_dan_menyertakan_path() {
+        let ex = vec![FewShotExample {
+            teks: "undangan pendampingan pengelolaan resiko".into(),
+            kode_ai: "555.02.04.01.02".into(),
+            kode_terbaik: "060.07.05".into(),
+            ai_deskripsi: "Manajemen Resiko".into(),
+            ai_path: "KOMUNIKASI DAN INFROMATIKA > APLIKASI INFORMATIKA".into(),
+            kb_deskripsi: "Evaluasi Kinerja dan Reformasi Birokrasi".into(),
+            kb_path: "ORGANISASI DAN KETATALAKSANAAN > EVALUASI ORGANISASI DAN TATA LAKSANA > Evaluasi Kinerja dan Reformasi Birokrasi".into(),
+            similarity: 0.88,
+        }];
+        let out = format_fewshot_fungsi(&ex);
+        assert!(out.contains("Naskah: \"undangan pendampingan pengelolaan resiko\""));
+        assert!(out.contains("Klasifikasi arsiparis: 060.07.05 — Evaluasi Kinerja dan Reformasi Birokrasi"));
+        assert!(out.contains("ORGANISASI DAN KETATALAKSANAAN > EVALUASI"));
+        assert!(out.contains("level pertama path = nama Fungsi/Urusan"));
+        // Tidak menyertakan info "kode awal keliru" (tidak relevan utk pemilihan fungsi)
+        assert!(!out.contains("Kode awal (keliru)"));
+    }
+
+    #[test]
+    fn format_fewshot_fungsi_kosong_menghasilkan_string_kosong() {
+        assert_eq!(format_fewshot_fungsi(&[]), "");
     }
 }

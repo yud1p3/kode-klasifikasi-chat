@@ -196,7 +196,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
 }
 
 // ── Mapping hasil /api/chat → bentuk hasil extension ──────────
-// Backend baru mengembalikan { results[], perihal, explanation, ringkasan? } (sinkron).
+// Backend baru mengembalikan { results[], perihal, perihal_inti?, explanation, ringkasan? } (sinkron).
 // Extension mengirim include_ringkasan:true sehingga respons juga memuat ringkasan
 // (isi ringkas) — versi web tidak mengirim, jadi tanpa ringkasan.
 // Disusun ulang agar UI existing (modal & popup) bisa langsung memakai:
@@ -220,6 +220,7 @@ function mapChatResult(data) {
   }));
   return {
     perihal: data.perihal || '',
+    perihal_inti: data.perihal_inti || '', // perihal bersih (untuk embedding feedback)
     explanation: data.explanation || '',
     isi_ringkas: data.ringkasan || '', // ringkasan naskah (khusus extension, dari include_ringkasan)
     kode_klasifikasi: top[0]?.kode || '',

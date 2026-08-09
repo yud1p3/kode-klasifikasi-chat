@@ -23,6 +23,7 @@ interface ChatResponse {
   results: ClassificationResult[]
   explanation: string
   perihal: string
+  perihal_inti?: string // perihal bersih (tanpa nama/tempat/waktu) — dipakai embedding feedback
 }
 
 interface ErrorResponse {
@@ -67,6 +68,7 @@ interface Message {
   isRateLimit?: boolean
   query?: string // teks naskah asli (untuk feedback)
   perihal?: string // perihal naskah dari hasil rerank AI (untuk validasi & statistik)
+  perihal_inti?: string // perihal bersih hasil select_fungsi (untuk embedding feedback)
 }
 
 // ---------- Auth (Google OAuth PKCE) ----------
@@ -867,6 +869,7 @@ function App() {
           kode_ai: msg.results[0].kode,
           feedback_type: 'positive',
           perihal: msg.perihal || '',
+          perihal_inti: msg.perihal_inti || '',
           api_keys: userApiKeys.length ? userApiKeys : undefined,
           chat_id: CHAT_ID
         })
@@ -924,6 +927,7 @@ function App() {
           kode_koreksi: form.kode.trim(),
           alasan: form.alasan,
           perihal: msg.perihal || '',
+          perihal_inti: msg.perihal_inti || '',
           api_keys: userApiKeys.length ? userApiKeys : undefined,
           candidates: msg.results.slice(0, 3).map(r => ({ kode: r.kode, deskripsi: r.deskripsi, path: r.path })),
           chat_id: CHAT_ID
@@ -1022,7 +1026,17 @@ function App() {
         return
       }
 
-      const cleaned = text.replace(/\n{3,}/g, '\n\n').replace(/\s{2,}/g, ' ').trim()
+      // Pertahankan struktur baris/markdown hasil ekstraksi (konsisten dengan
+      // extension SRIKANDI yang mengirim teks apa adanya) — hanya rapikan
+      // whitespace HORIZONTAL (spasi/tab ganda) dan baris kosong berlebih.
+      // Meratakan SEMUA whitespace (\s{2,}→' ') terbukti merusak struktur
+      // markdown pdf-inspector (heading/tabel) sehingga select_fungsi bisa
+      // memilih Fungsi berbeda untuk dokumen yang sama vs extension.
+      const cleaned = text
+        .replace(/\r\n?/g, '\n')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
       if (!cleaned || cleaned.length < 5) {
         setMessages(prev => [...prev, {
           role: 'assistant',
@@ -1114,7 +1128,8 @@ function App() {
         content: `${data.explanation}\n\n⏱️ Diproses dalam ${elapsedText} detik`,
         results: data.results?.slice(0, 3),
         query: userMsg.content,
-        perihal: data.perihal || ''
+        perihal: data.perihal || '',
+        perihal_inti: data.perihal_inti || ''
       }
       setMessages(prev => [...prev, assistantMsg])
       fetchQuota()
