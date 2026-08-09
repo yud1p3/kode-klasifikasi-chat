@@ -17,6 +17,12 @@ mengisi form (Hal, Ringkasan, Klasifikasi) secara otomatis.
 > Renungan awal untuk popup React (Vite) tercatat di `CATATAN_DISKUSI_2026-07-08.md`,
 > namun belum diimplementasikan.
 
+> ⚠️ **Keamanan naskah:** JANGAN upload naskah rahasia atau naskah berisi informasi
+> yang dikecualikan (rahasia negara, data pribadi, rahasia jabatan — istilah UU No.
+> 14/2008 tentang Keterbukaan Informasi Publik). Isi naskah dikirim ke server API
+> (Gemini) untuk dianalisa. Peringatan ini juga ditampilkan di popup dan di bawah
+> tombol "Analisa dengan AI" di halaman SRIKANDI.
+
 ---
 
 ## Struktur

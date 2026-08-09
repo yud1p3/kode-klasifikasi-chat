@@ -1608,7 +1608,7 @@ function App() {
         </form>
 
         <p className="mt-2 text-center text-xs font-semibold text-red-400">
-          ⚠️ JANGAN UPLOAD NASKAH BERSIFAT RAHASIA ATAU BERISI INFORMASI SENSITIF
+          ⚠️ JANGAN UPLOAD NASKAH RAHASIA ATAU NASKAH BERISI INFORMASI YANG DIKECUALIKAN
         </p>
         </footer>
       </div>

@@ -148,53 +148,81 @@
     btn.className = 'srikandi-ai-btn';
     btn.addEventListener('click', handleAnalisaClick);
 
+    let placed = false;
+
     // Strategy 1: Cari form card/container yang berisi file upload
     // SRIKANDI pakai MUI — cari container dengan class mengandung "file" atau "upload"
     const fileInput = getFileInput();
-    if (fileInput) {
+    if (!placed && fileInput) {
       // Cari container terdekat (MUI FormControl / div pembungkus)
       const formControl = fileInput.closest('[class*="Mui"]') ||
                           fileInput.closest('div[class]');
       if (formControl && formControl.parentElement) {
         // Inject setelah form control file upload
         formControl.parentElement.insertBefore(btn, formControl.nextSibling);
-        return;
+        placed = true;
       }
     }
 
     // Strategy 2: Cari elemen input dengan id="file" (MUI text field yg show filename)
-    const fileTextField = document.querySelector('input[id="file"][readonly]');
-    if (fileTextField) {
-      const muiContainer = fileTextField.closest('[class*="Mui"]') ||
-                           fileTextField.closest('.MuiFormControl-root') ||
-                           fileTextField.closest('[class*="form"]') ||
-                           fileTextField.parentElement;
-      if (muiContainer && muiContainer.parentElement) {
-        muiContainer.parentElement.insertBefore(btn, muiContainer.nextSibling);
-        return;
+    if (!placed) {
+      const fileTextField = document.querySelector('input[id="file"][readonly]');
+      if (fileTextField) {
+        const muiContainer = fileTextField.closest('[class*="Mui"]') ||
+                             fileTextField.closest('.MuiFormControl-root') ||
+                             fileTextField.closest('[class*="form"]') ||
+                             fileTextField.parentElement;
+        if (muiContainer && muiContainer.parentElement) {
+          muiContainer.parentElement.insertBefore(btn, muiContainer.nextSibling);
+          placed = true;
+        }
       }
     }
 
     // Strategy 3: Inject di atas tombol submit (jika ada)
-    const submitBtn = document.querySelector('button[type="submit"]');
-    if (submitBtn && submitBtn.parentElement) {
-      submitBtn.parentElement.insertBefore(btn, submitBtn);
-      return;
+    if (!placed) {
+      const submitBtn = document.querySelector('button[type="submit"]');
+      if (submitBtn && submitBtn.parentElement) {
+        submitBtn.parentElement.insertBefore(btn, submitBtn);
+        placed = true;
+      }
     }
 
     // Strategy 4 (last resort): Inject setelah Hal field
-    const halField = getHalTextarea();
-    if (halField && halField.parentElement) {
-      halField.parentElement.insertBefore(btn, halField.nextSibling);
-      return;
+    if (!placed) {
+      const halField = getHalTextarea();
+      if (halField && halField.parentElement) {
+        halField.parentElement.insertBefore(btn, halField.nextSibling);
+        placed = true;
+      }
     }
 
     // Strategy 5 (ultra fallback): Append ke body
-    btn.style.position = 'fixed';
-    btn.style.bottom = '20px';
-    btn.style.right = '20px';
-    btn.style.zIndex = '99999';
-    document.body.appendChild(btn);
+    if (!placed) {
+      btn.style.position = 'fixed';
+      btn.style.bottom = '20px';
+      btn.style.right = '20px';
+      btn.style.zIndex = '99999';
+      document.body.appendChild(btn);
+    }
+
+    // Peringatan keamanan — tampil tepat di bawah tombol agar terlihat SEBELUM
+    // analisa: naskah berlabel RAHASIA atau berisi informasi yang dikecualikan
+    // (istilah UU No. 14/2008) tidak boleh dikirim ke layanan AI.
+    const warn = document.createElement('div');
+    warn.id = 'srikandi-ai-warning';
+    warn.className = 'srikandi-ai-warning';
+    warn.textContent =
+      '⚠️ JANGAN UPLOAD NASKAH RAHASIA ATAU NASKAH BERISI INFORMASI YANG DIKECUALIKAN';
+    if (btn.style.position === 'fixed') {
+      // Fallback mode (tombol melayang): letakkan peringatan di bawah tombol
+      warn.style.position = 'fixed';
+      warn.style.bottom = '70px';
+      warn.style.right = '20px';
+      warn.style.maxWidth = '300px';
+      warn.style.zIndex = '99999';
+    }
+    btn.after(warn);
   }
 
   // ── Read Uploaded File ───────────────────────────────────────
@@ -1236,6 +1264,10 @@
       // Hapus tombol yang sudah ada
       const existingBtn = document.getElementById('srikandi-ai-analisa-btn');
       if (existingBtn) existingBtn.remove();
+
+      // Hapus peringatan keamanan yang menyertai tombol (hindari duplikat)
+      const existingWarn = document.getElementById('srikandi-ai-warning');
+      if (existingWarn) existingWarn.remove();
 
       // Hapus modal yang mungkin masih ada
       removeExistingModal();

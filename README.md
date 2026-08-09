@@ -18,7 +18,7 @@ Asisten AI berbasis **Rust + React + TypeScript** untuk mencari kode klasifikasi
 - **Statistik Feedback dengan Filter** — Dashboard statistik bisa difilter perihal (kata kunci) & status (valid/ditolak/pending)
 - **Hapus Feedback (Admin)** — Hanya email di `ADMIN_EMAILS` yang bisa menghapus feedback, dengan password secret `DELETE_SECRET`
 - **Rate Limit Protection** — Cooldown timer di frontend + rate limiter di backend (10 detik per request)
-- **Peringatan Naskah Sensitif** — UI menampilkan peringatan agar tidak mengunggah naskah rahasia/berisi informasi sensitif
+- **Peringatan Naskah Rahasia** — UI menampilkan peringatan agar tidak mengunggah naskah rahasia atau naskah berisi informasi yang dikecualikan (istilah UU No. 14/2008 tentang Keterbukaan Informasi Publik)
 - **Tailwind CSS UI** — Dark theme, responsive, typing indicator, status koneksi
 
 ---
