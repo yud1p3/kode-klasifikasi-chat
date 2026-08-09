@@ -1274,44 +1274,47 @@ async fn feedback_stats(
     }
 }
 
-/// Hapus feedback — hanya admin (ADMIN_EMAILS) dengan password secret (DELETE_SECRET).
-async fn delete_feedback(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-    path: web::Path<i64>,
-    body: web::Json<HashMap<String, String>>,
-) -> HttpResponse {
-    let user = match auth::require_user(&req, &state.auth) {
+/// Verifikasi izin hapus feedback — 4 lapis: admin (ADMIN_EMAILS), fitur aktif
+/// (DELETE_SECRET), anti brute-force (DeleteGuard), dan password secret
+/// (constant-time). Dipakai bersama oleh hapus tunggal (DELETE /api/feedback/{id})
+/// dan hapus massal (POST /api/feedback/bulk-delete) agar lapisan keamanan
+/// identik di kedua jalur.
+/// Mengembalikan Err(HttpResponse) bila ditolak (response siap kirim);
+/// Ok(()) bila lolos semua lapisan.
+async fn verify_delete_allowed(
+    state: &web::Data<AppState>,
+    req: &HttpRequest,
+    password: &str,
+) -> Result<(), HttpResponse> {
+    let user = match auth::require_user(req, &state.auth) {
         Ok(u) => u,
-        Err(r) => return r,
+        Err(r) => return Err(r),
     };
-
     // Lapis 1: hanya admin yang boleh menghapus
     if !state.is_admin(&user.email) {
-        return HttpResponse::Forbidden().json(ErrorResponse {
+        return Err(HttpResponse::Forbidden().json(ErrorResponse {
             error: "Hanya admin yang dapat menghapus feedback.".into(),
             retry_after_secs: None,
-        });
+        }));
     }
     // Lapis 2: fitur hapus harus dikonfigurasi (DELETE_SECRET)
     if state.delete_secret.is_empty() {
-        return HttpResponse::ServiceUnavailable().json(ErrorResponse {
+        return Err(HttpResponse::ServiceUnavailable().json(ErrorResponse {
             error: "Fitur hapus feedback nonaktif: DELETE_SECRET belum dikonfigurasi di server.".into(),
             retry_after_secs: None,
-        });
+        }));
     }
     // Lapis 3: anti brute-force — blokir bila email ini sedang terkunci
     if let Err(wait) = state.delete_guard.check(&user.email) {
-        return HttpResponse::TooManyRequests().json(ErrorResponse {
+        return Err(HttpResponse::TooManyRequests().json(ErrorResponse {
             error: format!(
                 "Terlalu banyak percobaan password yang gagal. Tunggu {wait} detik sebelum mencoba lagi."
             ),
             retry_after_secs: Some(wait),
-        });
+        }));
     }
     // Lapis 4: verifikasi password secret (constant-time)
-    let password = body.get("password").cloned().unwrap_or_default();
-    if !constant_time_eq(&state.delete_secret, &password) {
+    if !constant_time_eq(&state.delete_secret, password) {
         // Catat kegagalan; bila batas tercapai → kunci email ini
         if let Some(wait) = state.delete_guard.record_fail(&user.email) {
             let dur = if wait >= 60 {
@@ -1320,21 +1323,34 @@ async fn delete_feedback(
                 format!("{wait} detik")
             };
             eprintln!("🔒 Admin {} terkunci selama {dur} ({} percobaan gagal)", user.email, state.delete_guard.max_attempts);
-            return HttpResponse::TooManyRequests().json(ErrorResponse {
+            return Err(HttpResponse::TooManyRequests().json(ErrorResponse {
                 error: format!(
                     "Terlalu banyak percobaan password ({}) — terkunci selama {dur}.",
                     state.delete_guard.max_attempts
                 ),
                 retry_after_secs: Some(wait),
-            });
+            }));
         }
-        return HttpResponse::Forbidden().json(ErrorResponse {
+        return Err(HttpResponse::Forbidden().json(ErrorResponse {
             error: "Password secret salah.".into(),
             retry_after_secs: None,
-        });
+        }));
     }
     state.delete_guard.record_success(&user.email);
+    Ok(())
+}
 
+/// Hapus feedback tunggal — hanya admin (ADMIN_EMAILS) dengan password secret (DELETE_SECRET).
+async fn delete_feedback(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    body: web::Json<HashMap<String, String>>,
+) -> HttpResponse {
+    let password = body.get("password").cloned().unwrap_or_default();
+    if let Err(resp) = verify_delete_allowed(&state, &req, &password).await {
+        return resp;
+    }
     let id = path.into_inner();
     match sqlx::query("DELETE FROM klasifikasi_feedback WHERE id = $1")
         .bind(id)
@@ -1346,6 +1362,96 @@ async fn delete_feedback(
             error: "Feedback tidak ditemukan.".into(),
             retry_after_secs: None,
         }),
+        Err(e) => HttpResponse::InternalServerError().json(ErrorResponse {
+            error: format!("Gagal menghapus feedback: {e}"),
+            retry_after_secs: None,
+        }),
+    }
+}
+
+/// Payload hapus massal feedback — 3 mode (salah satu wajib diisi):
+/// - ids:    ID feedback spesifik (checkbox multi-select di dashboard)
+/// - status/perihal: hapus SEMUA feedback yang cocok filter (sama seperti
+///   filter statistik: status divalidasi whitelist, perihal di-escape kutip)
+/// - all:    hapus seluruh feedback
+#[derive(Debug, Deserialize)]
+struct BulkDeleteFeedbackRequest {
+    password: String,
+    #[serde(default)]
+    ids: Vec<i64>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    perihal: Option<String>,
+    #[serde(default)]
+    all: bool,
+}
+
+/// Hapus feedback secara massal — proteksi 4 lapis SAMA seperti hapus tunggal
+/// (admin + DELETE_SECRET + anti brute-force + password constant-time), via
+/// verify_delete_allowed. SQL dibangun dinamis namun aman: ids bertipe i64
+/// (bind parameter), status di-whitelist, perihal di-escape kutip tunggal
+/// (pola yang sama dengan fetch_stats).
+async fn bulk_delete_feedback(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    body: web::Json<BulkDeleteFeedbackRequest>,
+) -> HttpResponse {
+    if let Err(resp) = verify_delete_allowed(&state, &req, &body.password).await {
+        return resp;
+    }
+
+    // Batasi jumlah ID per request (cegah abuse); buang ID <= 0
+    let ids: Vec<i64> = body.ids.iter().copied().filter(|i| *i > 0).take(2000).collect();
+    let status = body.status.as_deref().map(str::trim).unwrap_or("").to_lowercase();
+    let status_valid = matches!(status.as_str(), "validated" | "rejected" | "pending");
+    let perihal = body.perihal.as_deref().map(str::trim).unwrap_or("");
+    if !body.all && ids.is_empty() && !status_valid && perihal.is_empty() {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "Tentukan kriteria hapus: ids, filter status/perihal, atau all=true.".into(),
+            retry_after_secs: None,
+        });
+    }
+    // Mode eksklusif: all=true TIDAK boleh dicampur kriteria lain (ids/filter)
+    // — mencegah permintaan "hapus semua" yang tak sengaja menyertakan id.
+    if body.all && (!ids.is_empty() || status_valid || !perihal.is_empty()) {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "all=true tidak boleh dikombinasikan dengan ids atau filter status/perihal.".into(),
+            retry_after_secs: None,
+        });
+    }
+
+    // Bangun SQL dinamis. Hanya ids yang di-bind ($1::bigint[]); status &
+    // perihal disisipkan aman (whitelist / escape), konsisten dengan fetch_stats.
+    let mut sql = String::from("DELETE FROM klasifikasi_feedback");
+    let mut conds: Vec<String> = Vec::new();
+    if !ids.is_empty() {
+        conds.push("id = ANY($1::bigint[])".to_string());
+    }
+    if status_valid {
+        conds.push(format!("status = '{status}'"));
+    }
+    if !perihal.is_empty() {
+        let esc = perihal.replace('\'', "''");
+        conds.push(format!("(perihal ILIKE '%{esc}%' OR naskah ILIKE '%{esc}%')"));
+    }
+    if !conds.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conds.join(" AND "));
+    }
+
+    let mut q = sqlx::query(&sql);
+    let ids_len = ids.len();
+    if !ids.is_empty() {
+        q = q.bind(ids);
+    }
+    match q.execute(&state.db).await {
+        Ok(r) => {
+            let n = r.rows_affected();
+            eprintln!("🗑️ Admin menghapus {n} feedback (massal): all={} ids={} status={} perihal={}",
+                body.all, ids_len, if status_valid { &status } else { "-" }, if perihal.is_empty() { "-" } else { perihal });
+            HttpResponse::Ok().json(serde_json::json!({ "deleted": n }))
+        }
         Err(e) => HttpResponse::InternalServerError().json(ErrorResponse {
             error: format!("Gagal menghapus feedback: {e}"),
             retry_after_secs: None,
@@ -1530,6 +1636,10 @@ async fn main() -> anyhow::Result<()> {
             .route("/api/me", web::get().to(me))
             .route("/api/feedback", web::post().to(submit_feedback))
             .route("/api/feedback/stats", web::get().to(feedback_stats))
+            // Harus DIDAFTARKAN sebelum /api/feedback/{id}: "bulk-delete" tidak
+            // lolos ekstraksi Path<i64>, sehingga bila terdaftar setelahnya
+            // request akan kena 400 (bukan fallthrough ke route ini).
+            .route("/api/feedback/bulk-delete", web::post().to(bulk_delete_feedback))
             .route("/api/feedback/{id}", web::delete().to(delete_feedback))
             .route("/api/codes", web::get().to(codes_search))
             .route("/api/dikecualikan/kode-rahasia", web::get().to(kode_rahasia))

@@ -139,6 +139,13 @@ interface FeedbackStats {
   recent: RecentFeedback[]
 }
 
+// Permintaan hapus feedback (modal admin): tunggal (satu baris), ids (checkbox
+// multi-select), atau filter (semua hasil filter saat ini — tanpa filter = semua).
+type DeleteReq =
+  | { mode: 'single'; target: RecentFeedback; count: number }
+  | { mode: 'ids'; ids: number[]; count: number }
+  | { mode: 'filter'; count: number }
+
 function base64UrlEncode(bytes: Uint8Array): string {
   let bin = ''
   bytes.forEach(b => { bin += String.fromCharCode(b) })
@@ -353,7 +360,7 @@ function ApiKeySettings({ keys, onSave }: {
 
 // ---------- Dashboard Statistik Feedback ----------
 
-function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onClearFilter, canDelete, onDeleteClick }: {
+function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onClearFilter, canDelete, onDeleteClick, onBulkDeleteClick }: {
   stats: FeedbackStats | null
   loading: boolean
   onRefresh: () => void
@@ -362,10 +369,13 @@ function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onCl
   onClearFilter: () => void
   canDelete: boolean
   onDeleteClick: (r: RecentFeedback) => void
+  onBulkDeleteClick: (mode: { kind: 'ids'; ids: number[] } | { kind: 'filter' }) => void
 }) {
   // Input perihal lokal + debounce 300ms agar tidak membanjiri server per ketikan
   const [perihalInput, setPerihalInput] = useState(filter.perihal)
   const perihalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // ID feedback yang dicentang (checkbox multi-select) — hanya admin
+  const [selected, setSelected] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     setPerihalInput(filter.perihal)
@@ -375,12 +385,46 @@ function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onCl
     if (perihalTimerRef.current) clearTimeout(perihalTimerRef.current)
   }, [])
 
+  // Setelah data dimuat ulang, buang pilihan yang sudah tidak ada di daftar
+  // (mis. baris yang baru saja dihapus) tanpa mereset pilihan lainnya.
+  useEffect(() => {
+    if (!stats) return
+    const visible = new Set(stats.recent.map(r => r.id))
+    setSelected(prev => {
+      const next = new Set([...prev].filter(id => visible.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [stats])
+
   const onPerihalChange = (v: string) => {
     setPerihalInput(v)
     if (perihalTimerRef.current) clearTimeout(perihalTimerRef.current)
     perihalTimerRef.current = setTimeout(() => {
       onApplyFilter({ ...filter, perihal: v })
     }, 300)
+  }
+
+  // ---------- Seleksi checkbox (hanya tampil untuk admin) ----------
+  const pageIds = stats?.recent.map(r => r.id) ?? []
+  const allSelected = pageIds.length > 0 && pageIds.every(id => selected.has(id))
+  const someSelected = pageIds.some(id => selected.has(id))
+
+  const toggleAll = () => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (allSelected) pageIds.forEach(id => next.delete(id))
+      else pageIds.forEach(id => next.add(id))
+      return next
+    })
+  }
+
+  const toggleOne = (id: number) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }
   if (loading && !stats) {
     return (
@@ -481,6 +525,19 @@ function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onCl
         >
           {loading ? 'Memuat...' : '🔄 Muat Ulang'}
         </button>
+        {canDelete && (
+          <button
+            type="button"
+            onClick={() => onBulkDeleteClick({ kind: 'filter' })}
+            disabled={stats.total === 0}
+            className="text-xs px-3 py-1.5 rounded-lg border border-red-900 bg-red-950/30 text-red-400 hover:text-red-300 hover:border-red-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-red-400 disabled:hover:border-red-900"
+            title={filter.status || filter.perihal.trim() ? 'Hapus SEMUA feedback yang cocok dengan filter saat ini' : 'Hapus SELURUH feedback di database'}
+          >
+            {filter.status || filter.perihal.trim()
+              ? `🗑️ Hapus hasil filter (${stats.total})`
+              : `🗑️ Hapus SEMUA (${stats.total})`}
+          </button>
+        )}
       </div>
 
       {(filter.status !== '' || filter.perihal.trim() !== '') && (
@@ -557,14 +614,40 @@ function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onCl
 
       {/* Tabel feedback terbaru */}
       <div className="rounded-xl border border-gray-800 bg-gray-950 overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between gap-3">
           <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Feedback Terbaru</h3>
-          <span className="text-[10px] text-gray-600">maks. 20 entri{canDelete ? ' · hapus butuh password secret (admin)' : ''}</span>
+          <div className="flex items-center gap-3">
+            {canDelete && selected.size > 0 && (
+              <>
+                <span className="text-[10px] text-violet-300">{selected.size} dipilih</span>
+                <button
+                  type="button"
+                  onClick={() => onBulkDeleteClick({ kind: 'ids', ids: [...selected] })}
+                  className="text-[10px] px-2.5 py-1 rounded-lg bg-red-950/60 border border-red-800 text-red-400 hover:bg-red-900/60 hover:text-red-300 transition-colors"
+                >
+                  🗑️ Hapus terpilih ({selected.size})
+                </button>
+              </>
+            )}
+            <span className="text-[10px] text-gray-600">maks. 20 entri{canDelete ? ' · hapus butuh password secret (admin)' : ''}</span>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-gray-500 border-b border-gray-800">
+                {canDelete && (
+                  <th className="px-4 py-2 font-medium whitespace-nowrap w-8">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected }}
+                      onChange={toggleAll}
+                      title="Pilih semua feedback di halaman ini"
+                      className="accent-violet-500 cursor-pointer"
+                    />
+                  </th>
+                )}
                 <th className="px-4 py-2 font-medium whitespace-nowrap">Waktu</th>
                 <th className="px-4 py-2 font-medium whitespace-nowrap">Pengguna</th>
                 <th className="px-4 py-2 font-medium">Perihal / Naskah</th>
@@ -577,7 +660,28 @@ function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onCl
             </thead>
             <tbody>
               {stats.recent.map(r => (
-                <tr key={r.id} className="border-b border-gray-800/60 last:border-0 hover:bg-gray-900/60 transition-colors">
+                <tr
+                  key={r.id}
+                  onClick={canDelete ? () => toggleOne(r.id) : undefined}
+                  className={`border-b border-gray-800/60 last:border-0 transition-colors ${
+                    canDelete
+                      ? selected.has(r.id)
+                        ? 'bg-violet-950/30 hover:bg-violet-950/40 cursor-pointer'
+                        : 'hover:bg-gray-900/60 cursor-pointer'
+                      : ''
+                  }`}
+                >
+                  {canDelete && (
+                    <td className="px-4 py-2.5">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(r.id)}
+                        onChange={() => toggleOne(r.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="accent-violet-500 cursor-pointer"
+                      />
+                    </td>
+                  )}
                   <td className="px-4 py-2.5 text-gray-500 whitespace-nowrap">{r.waktu}</td>
                   <td className="px-4 py-2.5">{userCell(r)}</td>
                   <td className="px-4 py-2.5 text-gray-400 max-w-[220px] truncate" title={r.perihal || r.naskah}>{(r.perihal || r.naskah) || '—'}</td>
@@ -593,7 +697,7 @@ function StatsDashboard({ stats, loading, onRefresh, filter, onApplyFilter, onCl
                     <td className="px-4 py-2.5">
                       <button
                         type="button"
-                        onClick={() => onDeleteClick(r)}
+                        onClick={(e) => { e.stopPropagation(); onDeleteClick(r) }}
                         title="Hapus feedback (admin)"
                         className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-950/40 transition-colors"
                       >
@@ -643,7 +747,8 @@ function App() {
   const [statsLoading, setStatsLoading] = useState(false)
   const [statsFilter, setStatsFilter] = useState<StatsFilter>({ status: '', perihal: '' })
   const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem('kk_is_admin') === 'true')
-  const [deleteTarget, setDeleteTarget] = useState<RecentFeedback | null>(null)
+  // Permintaan hapus aktif — tunggal / ids (checkbox) / filter (hasil filter saat ini)
+  const [deleteReq, setDeleteReq] = useState<DeleteReq | null>(null)
   const [deletePassword, setDeletePassword] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -792,7 +897,7 @@ function App() {
   }, [])
 
   const closeDeleteModal = useCallback(() => {
-    setDeleteTarget(null)
+    setDeleteReq(null)
     setDeletePassword('')
     setDeleteError(null)
     if (deleteLockoutRef.current) clearInterval(deleteLockoutRef.current)
@@ -800,15 +905,32 @@ function App() {
   }, [])
 
   const confirmDelete = async () => {
-    if (!deleteTarget || !deletePassword.trim() || deleteLockout !== null) return
+    if (!deleteReq || !deletePassword.trim() || deleteLockout !== null) return
     setDeleting(true)
     setDeleteError(null)
     try {
-      const r = await fetch(`${API_BASE}/api/feedback/${deleteTarget.id}`, {
-        method: 'DELETE',
-        headers: authHeaders(),
-        body: JSON.stringify({ password: deletePassword })
-      })
+      // Hapus tunggal → DELETE /api/feedback/{id}; massal → POST /api/feedback/bulk-delete
+      const isSingle = deleteReq.mode === 'single'
+      const r = await fetch(
+        isSingle ? `${API_BASE}/api/feedback/${deleteReq.target.id}` : `${API_BASE}/api/feedback/bulk-delete`,
+        {
+          method: isSingle ? 'DELETE' : 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(
+            isSingle
+              ? { password: deletePassword }
+              : deleteReq.mode === 'ids'
+                ? { password: deletePassword, ids: deleteReq.ids }
+                : {
+                    password: deletePassword,
+                    // Tanpa filter aktif → hapus SEMUA feedback
+                    status: statsFilter.status || undefined,
+                    perihal: statsFilter.perihal.trim() || undefined,
+                    all: !statsFilter.status && !statsFilter.perihal.trim()
+                  }
+          )
+        }
+      )
       if (r.ok) {
         closeDeleteModal()
         fetchStats()
@@ -816,7 +938,7 @@ function App() {
         const err = await r.json().catch(() => null) as ErrorResponse | null
         if (r.status === 401) {
           logout()
-          setDeleteTarget(null)
+          setDeleteReq(null)
           return
         }
         if (r.status === 429 && err?.retry_after_secs) {
@@ -1673,7 +1795,18 @@ function App() {
           onClearFilter={clearStatsFilter}
           canDelete={isAdmin}
           onDeleteClick={(r) => {
-            setDeleteTarget(r)
+            setDeleteReq({ mode: 'single', target: r, count: 1 })
+            setDeletePassword('')
+            setDeleteError(null)
+            if (deleteLockoutRef.current) clearInterval(deleteLockoutRef.current)
+            setDeleteLockout(null)
+          }}
+          onBulkDeleteClick={(mode) => {
+            setDeleteReq(
+              mode.kind === 'ids'
+                ? { mode: 'ids', ids: mode.ids, count: mode.ids.length }
+                : { mode: 'filter', count: stats?.total ?? 0 }
+            )
             setDeletePassword('')
             setDeleteError(null)
             if (deleteLockoutRef.current) clearInterval(deleteLockoutRef.current)
@@ -1689,15 +1822,29 @@ function App() {
         />
       )}
 
-      {/* Modal hapus feedback (admin + password secret) */}
-      {deleteTarget && (
+      {/* Modal hapus feedback (admin + password secret) — tunggal & massal */}
+      {deleteReq && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-md rounded-2xl border border-gray-700 bg-gray-900 p-5 space-y-4 shadow-2xl">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-white">Hapus Feedback #{deleteTarget.id}</h3>
+                <h3 className="text-sm font-semibold text-white">
+                  {deleteReq.mode === 'single'
+                    ? `Hapus Feedback #${deleteReq.target.id}`
+                    : deleteReq.mode === 'ids'
+                      ? `Hapus ${deleteReq.count} Feedback Terpilih`
+                      : statsFilter.status || statsFilter.perihal.trim()
+                        ? `Hapus ${deleteReq.count} Feedback (Hasil Filter)`
+                        : 'Hapus SEMUA Feedback'}
+                </h3>
                 <p className="text-xs text-gray-500 mt-0.5 truncate">
-                  {deleteTarget.perihal || deleteTarget.naskah || '—'}
+                  {deleteReq.mode === 'single'
+                    ? (deleteReq.target.perihal || deleteReq.target.naskah || '—')
+                    : deleteReq.mode === 'ids'
+                      ? `${deleteReq.count} baris yang dicentang akan dihapus sekaligus`
+                      : statsFilter.status || statsFilter.perihal.trim()
+                        ? `Semua feedback yang cocok filter saat ini (status${statsFilter.status ? ` ${statsFilter.status}` : ''}${statsFilter.perihal.trim() ? `, perihal mengandung “${statsFilter.perihal.trim()}”` : ''}) akan dihapus`
+                        : 'Seluruh feedback di database akan dihapus'}
                 </p>
               </div>
               <button
@@ -1759,7 +1906,9 @@ function App() {
                   ? '🔒 Terkunci'
                   : deleting
                     ? 'Menghapus...'
-                    : '🗑 Hapus'}
+                    : deleteReq.mode === 'ids'
+                      ? `🗑 Hapus ${deleteReq.count}`
+                      : '🗑 Hapus'}
               </button>
             </div>
           </div>
