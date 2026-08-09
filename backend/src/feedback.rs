@@ -147,8 +147,11 @@ fn grab_field(raw: &str, key: &str) -> String {
     String::new()
 }
 
-/// Satu contoh koreksi tervalidasi untuk few-shot, lengkap dengan deskripsi &
-/// path kode awal & kode benar (dari dataset) agar Gemini punya konteks hirarki.
+/// Satu contoh tervalidasi untuk few-shot, lengkap dengan deskripsi & path
+/// kode awal & kode benar (dari dataset) agar Gemini punya konteks hirarki.
+/// Berlaku untuk dua jenis feedback:
+/// - correction: kode_ai ≠ kode_terbaik (arsiparis mengoreksi kode AI)
+/// - positive:   kode_ai == kode_terbaik (arsiparis mengonfirmasi kode AI benar)
 pub struct FewShotExample {
     pub teks: String,       // perihal (atau potongan naskah)
     pub kode_ai: String,
@@ -159,8 +162,14 @@ pub struct FewShotExample {
     pub kb_path: String,
 }
 
-/// Ambil hingga 5 koreksi tervalidasi yang NASKAHNYA PALING MIRIP dengan embedding
-/// query saat ini (pgvector cosine). Dipakai sebagai few-shot di prompt rerank.
+/// Ambil hingga 5 feedback TERVALIDASI yang NASKAHNYA PALING MIRIP dengan
+/// embedding query saat ini (pgvector cosine). Dipakai sebagai few-shot di
+/// prompt rerank.
+///
+/// Mencakup DUA jenis: koreksi tervalidasi (kode_ai ≠ kode_terbaik) DAN
+/// feedback positif (kode_ai == kode_terbaik — arsiparis mengonfirmasi kode
+/// benar). Feedback positif sebelumnya tidak pernah dipakai padahal justru
+/// validasi terkuat: "naskah seperti ini → kode X benar".
 pub async fn fetch_fewshot(db: &PgPool, embedding: &[f64]) -> Result<Vec<FewShotExample>> {
     let emb_str = embedding
         .iter()
@@ -175,9 +184,9 @@ pub async fn fetch_fewshot(db: &PgPool, embedding: &[f64]) -> Result<Vec<FewShot
          FROM klasifikasi_feedback f
          LEFT JOIN klasifikasi_embedding ai ON ai.kode = f.kode_ai
          LEFT JOIN klasifikasi_embedding kb ON kb.kode = f.kode_terbaik
-         WHERE f.status = 'validated' AND f.feedback_type = 'correction'
-           AND f.kode_terbaik IS NOT NULL AND f.kode_terbaik <> f.kode_ai
-           AND f.embedding IS NOT NULL
+         WHERE f.status = 'validated' AND f.embedding IS NOT NULL
+           AND ( (f.feedback_type = 'correction' AND f.kode_terbaik IS NOT NULL AND f.kode_terbaik <> f.kode_ai)
+              OR (f.feedback_type = 'positive' AND f.kode_ai IS NOT NULL AND f.kode_ai <> '') )
          ORDER BY f.embedding <=> $1::vector
          LIMIT 5",
     )
@@ -199,25 +208,36 @@ pub async fn fetch_fewshot(db: &PgPool, embedding: &[f64]) -> Result<Vec<FewShot
 }
 
 /// Format teks few-shot untuk disisipkan ke prompt rerank.
-/// Menyertakan deskripsi & path kode awal & kode benar agar Gemini paham
-/// konteks fungsi/urusan dari tiap contoh koreksi (dipotong agar prompt ringkas).
+/// Menyertakan deskripsi & path kode agar Gemini paham konteks fungsi/urusan
+/// dari tiap contoh (dipotong agar prompt ringkas). Dua bentuk:
+/// - positive (kode_ai == kode_terbaik): konfirmasi arsiparis
+/// - correction (kode_ai != kode_terbaik): koreksi arsiparis
 pub fn format_fewshot(examples: &[FewShotExample]) -> String {
     if examples.is_empty() {
         return String::new();
     }
-    let mut out = String::from("===== CONTOH KOREKSI ARSIPARIS (kasus serupa sebelumnya) =====\n");
+    let mut out = String::from("===== CONTOH VALIDASI ARSIPARIS (kasus serupa sebelumnya) =====\n");
     for (i, e) in examples.iter().enumerate() {
         let teks: String = e.teks.chars().take(120).collect();
-        let ai_d: String = e.ai_deskripsi.chars().take(100).collect();
         let kb_d: String = e.kb_deskripsi.chars().take(100).collect();
-        let ai_p: String = e.ai_path.chars().take(200).collect();
         let kb_p: String = e.kb_path.chars().take(200).collect();
-        out.push_str(&format!(
-            "{}. Naskah: \"{}\". Kode awal (keliru): {} — {}. Path: {}. Kode benar setelah koreksi arsiparis: {} — {}. Path: {}.\n",
-            i + 1, teks, e.kode_ai, ai_d, ai_p, e.kode_terbaik, kb_d, kb_p
-        ));
+        if e.kode_ai == e.kode_terbaik {
+            // Feedback positif: arsiparis mengonfirmasi kode AI benar
+            out.push_str(&format!(
+                "{}. Naskah: \"{}\". Kode klasifikasi benar (dikonfirmasi arsiparis): {} — {}. Path: {}.\n",
+                i + 1, teks, e.kode_terbaik, kb_d, kb_p
+            ));
+        } else {
+            // Feedback koreksi: arsiparis mengoreksi kode AI
+            let ai_d: String = e.ai_deskripsi.chars().take(100).collect();
+            let ai_p: String = e.ai_path.chars().take(200).collect();
+            out.push_str(&format!(
+                "{}. Naskah: \"{}\". Kode awal (keliru): {} — {}. Path: {}. Kode benar setelah koreksi arsiparis: {} — {}. Path: {}.\n",
+                i + 1, teks, e.kode_ai, ai_d, ai_p, e.kode_terbaik, kb_d, kb_p
+            ));
+        }
     }
-    out.push_str("Gunakan contoh ini sebagai panduan: bila naskah saat ini serupa dengan suatu contoh, prioritaskan kode benar yang telah dikoreksi arsiparis tersebut.\n");
+    out.push_str("Gunakan contoh ini sebagai panduan: bila naskah saat ini serupa dengan suatu contoh, prioritaskan kode klasifikasi yang telah dikonfirmasi/dikoreksi arsiparis tersebut.\n");
     out
 }
 
@@ -372,5 +392,54 @@ mod tests {
     #[test]
     fn format_fewshot_kosong_menghasilkan_string_kosong() {
         assert_eq!(format_fewshot(&[]), "");
+    }
+
+    #[test]
+    fn format_fewshot_feedback_positif_dikonfirmasi_arsiparis() {
+        // Feedback positif: kode_ai == kode_terbaik → ditampilkan sebagai
+        // "dikonfirmasi arsiparis", bukan "kode awal keliru".
+        let ex = vec![FewShotExample {
+            teks: "undangan coaching clinic pengisian kertas kerja penilaian SPIP terintegrasi".into(),
+            kode_ai: "900.15.03.05.01".into(),
+            kode_terbaik: "900.15.03.05.01".into(),
+            ai_deskripsi: "Hasil Pembinaan kapabilitas APIP".into(),
+            ai_path: "KEUANGAN > PENGAWASAN".into(),
+            kb_deskripsi: "Hasil Pembinaan kapabilitas APIP".into(),
+            kb_path: "KEUANGAN > PENGAWASAN > Hasil Pembinaan kapabilitas APIP".into(),
+        }];
+        let out = format_fewshot(&ex);
+        assert!(out.contains(
+            "Kode klasifikasi benar (dikonfirmasi arsiparis): 900.15.03.05.01 — Hasil Pembinaan kapabilitas APIP"
+        ));
+        assert!(!out.contains("Kode awal (keliru)"));
+        assert!(out.contains("prioritaskan kode klasifikasi yang telah dikonfirmasi/dikoreksi arsiparis"));
+    }
+
+    #[test]
+    fn format_fewshot_campuran_positif_dan_koreksi() {
+        let ex = vec![
+            FewShotExample {
+                teks: "naskah A".into(),
+                kode_ai: "100.01".into(),
+                kode_terbaik: "100.01".into(),
+                ai_deskripsi: "A".into(),
+                ai_path: "F1".into(),
+                kb_deskripsi: "A".into(),
+                kb_path: "F1".into(),
+            },
+            FewShotExample {
+                teks: "naskah B".into(),
+                kode_ai: "200.02".into(),
+                kode_terbaik: "200.02.01".into(),
+                ai_deskripsi: "B".into(),
+                ai_path: "F2".into(),
+                kb_deskripsi: "B detail".into(),
+                kb_path: "F2 > B".into(),
+            },
+        ];
+        let out = format_fewshot(&ex);
+        assert!(out.contains("dikonfirmasi arsiparis): 100.01"));
+        assert!(out.contains("Kode awal (keliru): 200.02 — B. Path: F2."));
+        assert!(out.contains("Kode benar setelah koreksi arsiparis: 200.02.01 — B detail. Path: F2 > B."));
     }
 }

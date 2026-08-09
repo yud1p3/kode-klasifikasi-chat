@@ -15,6 +15,7 @@ pub async fn similarity_search(
 
     let query = format!(
         r#"SELECT id, kode, deskripsi, path,
+           retensi_aktif, retensi_inaktif, penyusutan_akhir, klasifikasi_keamanan,
            1.0 - (embedding <=> '[{}]'::vector) AS similarity
         FROM klasifikasi_embedding
         WHERE embedding IS NOT NULL
@@ -23,17 +24,22 @@ pub async fn similarity_search(
         emb_str, emb_str, limit
     );
 
-    let rows = sqlx::query_as::<_, (i32, String, String, String, f64)>(&query)
+    // Kolom metadata SKKAD bisa NULL (record tanpa data di skkad, mis. id 187823)
+    let rows = sqlx::query_as::<_, (i32, String, String, String, Option<i32>, Option<i32>, Option<String>, Option<String>, f64)>(&query)
         .fetch_all(db)
         .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, kode, deskripsi, path, similarity)| ClassificationResult {
+        .map(|(id, kode, deskripsi, path, retensi_aktif, retensi_inaktif, penyusutan_akhir, klasifikasi_keamanan, similarity)| ClassificationResult {
             id,
             kode,
             deskripsi,
             path,
+            retensi_aktif,
+            retensi_inaktif,
+            penyusutan_akhir,
+            klasifikasi_keamanan,
             similarity,
         })
         .collect())

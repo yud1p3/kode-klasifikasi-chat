@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod auth;
+mod dikecualikan;
 mod feedback;
 mod gemini;
 mod key_rotator;
@@ -83,6 +84,16 @@ struct ClassificationResult {
     deskripsi: String,
     path: String,
     similarity: f64,
+    /// Metadata SKKAD (kolom baru di klasifikasi_embedding). Opsional: NULL
+    /// bila record tidak punya data skkad. Diteruskan ke UI (web & extension).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retensi_aktif: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retensi_inaktif: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    penyusutan_akhir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    klasifikasi_keamanan: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,12 +126,42 @@ struct AppState {
     delete_secret: String,
     /// Pengaman anti brute-force percobaan password hapus feedback.
     delete_guard: DeleteGuard,
+    /// Daftar kode klasifikasi berklasifikasi keamanan SENSITIF per SKKAD
+    /// (Rahasia / Sangat Rahasia / Terbatas), dimuat dari DB saat startup.
+    /// Dipakai lapisan guard tambahan: kode yang tertulis di dalam naskah
+    /// dicocokkan ke daftar ini (deteksi deterministik, tanpa AI).
+    kode_sensitif: std::collections::HashSet<String>,
 }
 
 impl AppState {
     fn is_admin(&self, email: &str) -> bool {
         self.admin_emails.iter().any(|e| e.eq_ignore_ascii_case(email.trim()))
     }
+}
+
+/// Muat daftar kode berklasifikasi keamanan sensitif dari DB (kolom
+/// klasifikasi_keamanan: Rahasia/Sangat Rahasia/Terbatas). Dipakai guard
+/// deterministik sebelum teks dikirim ke Gemini. Bila query gagal, server
+/// TETAP berjalan (guard berbasis teks tetap aktif; lapisan kode nonaktif).
+async fn load_kode_sensitif(db: &PgPool) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    match sqlx::query_scalar::<_, String>(
+        "SELECT kode FROM klasifikasi_embedding
+         WHERE klasifikasi_keamanan IN ('Rahasia', 'Sangat Rahasia', 'Terbatas')
+           AND kode IS NOT NULL AND kode <> ''",
+    )
+    .fetch_all(db)
+    .await
+    {
+        Ok(rows) => {
+            for k in rows {
+                set.insert(k.trim().to_string());
+            }
+            println!("🛡️  Kode klasifikasi sensitif dimuat: {} kode (Rahasia/Sangat Rahasia/Terbatas)", set.len());
+        }
+        Err(e) => eprintln!("⚠️  Gagal muat daftar kode sensitif dari DB: {e} — lapisan kode nonaktif"),
+    }
+    set
 }
 
 /// Bandingkan dua string dengan waktu konstan (hindari timing attack pada password).
@@ -270,6 +311,23 @@ async fn chat(
     if message.is_empty() {
         return HttpResponse::BadRequest().json(ErrorResponse {
             error: "Pesan tidak boleh kosong".into(),
+            retry_after_secs: None,
+        });
+    }
+    // Pengaman: tolak naskah berindikasi informasi yang dikecualikan / berlabel
+    // rahasia SEBELUM menyentuh Gemini (deteksi deterministik, tanpa AI).
+    // Berlaku untuk semua klien (web & extension).
+    // Lapis 1: aturan teks (label, frasa, NIK massal).
+    // Lapis 2: kode klasifikasi sensitif per SKKAD yang tertulis di dalam naskah.
+    let mut alasan = dikecualikan::deteksi(message);
+    alasan.extend(dikecualikan::deteksi_kode(message, &state.kode_sensitif));
+    if !alasan.is_empty() {
+        eprintln!("🚫 Chat dibatalkan (informasi dikecualikan): {}", alasan.join("; "));
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: format!(
+                "Demi keamanan, analisa dibatalkan. Naskah ini terdeteksi mengandung informasi yang dikecualikan: {}. Jangan kirim naskah rahasia atau naskah berisi informasi yang dikecualikan (Pasal 17 UU No. 14/2008) ke layanan AI.",
+                alasan.join("; ")
+            ),
             retry_after_secs: None,
         });
     }
@@ -606,6 +664,20 @@ async fn submit_feedback(
             retry_after_secs: None,
         });
     }
+    // Pengaman: tolak feedback berindikasi informasi yang dikecualikan — feedback
+    // juga memproses naskah via Gemini (few-shot & validasi koreksi).
+    // Lapis 1: aturan teks. Lapis 2: kode klasifikasi sensitif per SKKAD.
+    let mut alasan = dikecualikan::deteksi(msg);
+    alasan.extend(dikecualikan::deteksi_kode(msg, &state.kode_sensitif));
+    if !alasan.is_empty() {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: format!(
+                "Demi keamanan, feedback dibatalkan. Naskah ini terdeteksi mengandung informasi yang dikecualikan: {}",
+                alasan.join("; ")
+            ),
+            retry_after_secs: None,
+        });
+    }
     // Daftar API Key pengguna (multi-key, rotasi otomatis sebelum fallback key server)
     let keys = body.user_keys();
 
@@ -642,9 +714,39 @@ async fn submit_feedback(
             None => (None, None, None),
         };
         let name = display_name(body.user_name.as_deref(), name.as_deref());
+
+        // Embedding naskah (best-effort) — dipakai few-shot untuk query serupa.
+        // Teks embedding DISELARASKAN dengan query chat (build_embed_query):
+        // selalu "FUNGSI > perihal_inti", agar feedback positif bisa dicocokkan
+        // dalam ruang embedding yang sama dengan query (koreksi validated sudah
+        // melakukan ini; positif sebelumnya tidak pernah di-embed sehingga
+        // tidak pernah muncul di few-shot — sudah diperbaiki).
+        // Pengaman: cek kuota proaktif (branch ini anonim & tanpa rate limiter).
+        // Bila kuota tidak cukup, embedding dilewati — feedback TETAP tersimpan
+        // (embedding NULL = tidak muncul di few-shot, tidak fatal).
+        let mut emb_store: Option<String> = None;
+        if state.quota.check(1, 1).is_ok() {
+            let (embed_text, _pl) = build_embed_query(&state, &keys, msg).await;
+            if let Ok((emb, _)) = state
+                .key_rotator
+                .try_all_prefer(&keys, |key| {
+                    let t = embed_text.clone();
+                    async move { gemini::embed_text(&key, &t).await }
+                })
+                .await
+            {
+                state.quota.record_embed(1);
+                emb_store = Some(format!(
+                    "[{}]",
+                    emb.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+                ));
+            }
+        }
+
         let res = sqlx::query(
-            "INSERT INTO klasifikasi_feedback (naskah, kode_ai, feedback_type, status, kode_terbaik, perihal, user_sub, user_email, user_name, chat_id)
-             VALUES ($1, $2, 'positive', 'validated', $3, $4, $5, $6, $7, $8)",
+            "INSERT INTO klasifikasi_feedback (naskah, kode_ai, feedback_type, status, kode_terbaik, perihal, user_sub, user_email, user_name, chat_id, embedding)
+             VALUES ($1, $2, 'positive', 'validated', $3, $4, $5, $6, $7, $8,
+                     CASE WHEN $9::text IS NULL THEN NULL ELSE $9::vector END)",
         )
         .bind(&naskah_store)
         .bind(&body.kode_ai)
@@ -654,6 +756,7 @@ async fn submit_feedback(
         .bind(email)
         .bind(name)
         .bind(chat_id)
+        .bind(emb_store.as_deref())
         .execute(&state.db)
         .await;
         return match res {
@@ -1002,6 +1105,19 @@ async fn codes_search(
     }
 }
 
+/// Daftar kode klasifikasi berklasifikasi keamanan sensitif (per SKKAD) —
+/// dipakai Chrome extension untuk lapisan guard lokal SEBELUM teks dikirim
+/// ke API (daftar di-cache di chrome.storage.local, fallback ke aturan teks).
+async fn kode_rahasia(state: web::Data<AppState>) -> HttpResponse {
+    let mut v: Vec<String> = state.kode_sensitif.iter().cloned().collect();
+    v.sort();
+    HttpResponse::Ok().json(serde_json::json!({
+        "kode": v,
+        "level": ["Rahasia", "Sangat Rahasia", "Terbatas"],
+        "total": v.len(),
+    }))
+}
+
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
@@ -1056,6 +1172,8 @@ async fn main() -> anyhow::Result<()> {
         .max_connections(10)
         .connect(&database_url)
         .await?;
+
+    let kode_sensitif = load_kode_sensitif(&db).await;
 
     let key_rotator = Arc::new(KeyRotator::new(keys));
     let rate_limit_interval = Duration::from_secs(MIN_REQUEST_INTERVAL.as_secs());
@@ -1118,6 +1236,7 @@ async fn main() -> anyhow::Result<()> {
         admin_emails,
         delete_secret,
         delete_guard,
+        kode_sensitif,
     });
 
     HttpServer::new(move || {
@@ -1142,6 +1261,7 @@ async fn main() -> anyhow::Result<()> {
             .route("/api/feedback/stats", web::get().to(feedback_stats))
             .route("/api/feedback/{id}", web::delete().to(delete_feedback))
             .route("/api/codes", web::get().to(codes_search))
+            .route("/api/dikecualikan/kode-rahasia", web::get().to(kode_rahasia))
     })
     .bind((host.as_str(), port))?
     .run()

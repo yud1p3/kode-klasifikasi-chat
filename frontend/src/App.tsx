@@ -12,6 +12,11 @@ interface ClassificationResult {
   deskripsi: string
   path: string
   similarity: number
+  // Metadata SKKAD (opsional — ada bila record punya data skkad)
+  retensi_aktif?: number | null
+  retensi_inaktif?: number | null
+  penyusutan_akhir?: string | null
+  klasifikasi_keamanan?: string | null
 }
 
 interface ChatResponse {
@@ -1398,6 +1403,36 @@ function App() {
                       <div className="mt-1 ml-0 text-xs text-gray-500">
                         {r.path}
                       </div>
+                      {/* Metadata SKKAD: klasifikasi keamanan + retensi + penyusutan */}
+                      {(r.klasifikasi_keamanan || r.retensi_aktif != null || r.retensi_inaktif != null || r.penyusutan_akhir) && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">
+                          {r.klasifikasi_keamanan && r.klasifikasi_keamanan !== '-' && (
+                            <span
+                              className={`px-2 py-0.5 rounded-full border font-medium ${
+                                r.klasifikasi_keamanan === 'Sangat Rahasia'
+                                  ? 'bg-red-950 border-red-700 text-red-400'
+                                  : r.klasifikasi_keamanan === 'Rahasia'
+                                    ? 'bg-orange-950 border-orange-700 text-orange-400'
+                                    : r.klasifikasi_keamanan === 'Terbatas'
+                                      ? 'bg-amber-950 border-amber-700 text-amber-400'
+                                      : 'bg-emerald-950 border-emerald-700 text-emerald-400'
+                              }`}
+                            >
+                              🔒 {r.klasifikasi_keamanan}
+                            </span>
+                          )}
+                          {(r.retensi_aktif != null || r.retensi_inaktif != null) && (
+                            <span className="px-2 py-0.5 rounded-full border border-gray-700 text-gray-400 bg-gray-900/60">
+                              🗓️ Aktif {r.retensi_aktif ?? '–'} th · Inaktif {r.retensi_inaktif ?? '–'} th
+                            </span>
+                          )}
+                          {r.penyusutan_akhir && r.penyusutan_akhir !== '-' && (
+                            <span className="px-2 py-0.5 rounded-full border border-gray-700 text-gray-400 bg-gray-900/60">
+                              ♻️ Penyusutan: {r.penyusutan_akhir}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
