@@ -142,6 +142,29 @@ fn reranked_first_kode(results: &[super::ClassificationResult]) -> (String, Stri
     }
 }
 
+/// Samakan kode terpilih dalam penjelasan dengan kode peringkat teratas SETELAH
+/// reorder spesifisitas path. Pola penjelasan: "... Kode klasifikasi <kode>
+/// dipilih dengan alasan ...". Bila <kode> bukan kode peringkat teratas baru
+/// (mis. Gemini memilih induk padahal anaknya ada di kandidat), ganti <kode>
+/// tersebut. Kalimat penjelasan lainnya dibiarkan (alasan tetap relevan).
+fn fix_explanation_kode(explanation: &str, top_kode: &str) -> String {
+    const MARK: &str = "Kode klasifikasi ";
+    if let Some((before, rest)) = explanation.split_once(MARK) {
+        // Ambil token kode sampai spasi berikutnya (format kode: digit + titik)
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let old_kode = &rest[..end];
+        if !old_kode.is_empty() && old_kode != top_kode {
+            let mut out = String::with_capacity(explanation.len() + 8);
+            out.push_str(before);
+            out.push_str(MARK);
+            out.push_str(top_kode);
+            out.push_str(&rest[end..]);
+            return out;
+        }
+    }
+    explanation.to_string()
+}
+
 pub async fn rerank_and_explain(
     api_key: &str,
     message: &str,
@@ -309,19 +332,134 @@ pub async fn rerank_and_explain(
     let mut reranked = results.to_vec();
     reranked.sort_by_key(|r| rank_map.get(&r.kode).copied().unwrap_or(usize::MAX));
 
-    // Insertion sort: pastikan kode lebih spesifik selalu di atas kode parent-nya
+    // Pastikan kode lebih spesifik (ANAK) SELALU di atas induknya — aturan
+    // "spesifisitas path". Versi lama hanya menukar pasangan BERSEBELAHAN,
+    // sehingga induk yang dipisah kode lain dari anaknya tidak pernah tertukar
+    // (contoh gagal lama: [045.02.02, 045.02.01.02, 045.02.02.03] — anak 045.02.02.03
+    // tidak berdekatan dengan induk 045.02.02, jadi aturan tak dieksekusi).
+    // Algoritma baru: scan berulang; setiap kali induk terletak di atas
+    // keturunannya (kode anak = induk + "." + ...), pindahkan anak itu TEPAT
+    // ke atas induknya. Hanya menyentuh relasi induk–anak; urutan relatif
+    // kode yang tak berelasi dipertahankan (stabil) mengikuti ranking Gemini.
+    reranked = reorder_specific_first(reranked);
+
+    // Konsistensi penjelasan: setelah reorder spesifisitas path, kode terpilih
+    // yang disebut di penjelasan harus sama dengan peringkat teratas baru
+    // (bila Gemini memilih induk padahal anaknya ada di kandidat, aturan path
+    // yang menang — perbarui penjelasan agar tidak menyesatkan pengguna).
+    let top_kode = reranked.first().map(|r| r.kode.as_str()).unwrap_or("");
+    let explanation = if top_kode.is_empty() {
+        explanation
+    } else {
+        fix_explanation_kode(&explanation, top_kode)
+    };
+
+    Ok((reranked, explanation, perihal, ringkasan))
+}
+
+/// Pindahkan kode ANAK ke atas induknya — aturan "spesifisitas path".
+/// Iteratif: scan dari atas; setiap kali ada keturunan (kode = induk + "." + ...)
+/// yang terletak DI BAWAH induknya, pindahkan anak itu tepat ke atas induk.
+/// Berhenti saat stabil. Stabil: relasi induk–anak tidak disentuh setelah satu
+/// pass penuh tanpa perpindahan; urutan kode tak berelasi dipertahankan.
+fn reorder_specific_first(mut reranked: Vec<super::ClassificationResult>) -> Vec<super::ClassificationResult> {
     let mut changed = true;
     while changed {
         changed = false;
-        for i in 0..reranked.len() - 1 {
-            if reranked[i+1].kode.starts_with(&format!("{}.{}", reranked[i].kode, ""))
-                && !reranked[i].kode.ends_with(&reranked[i+1].kode)
-            {
-                reranked.swap(i, i+1);
+        for i in 0..reranked.len() {
+            let prefix = format!("{}.", reranked[i].kode);
+            if let Some(j) = (i + 1..reranked.len()).find(|&j| reranked[j].kode.starts_with(&prefix)) {
+                let item = reranked.remove(j);
+                reranked.insert(i, item);
                 changed = true;
+                break;
             }
         }
     }
+    reranked
+}
 
-    Ok((reranked, explanation, perihal, ringkasan))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(kode: &str) -> super::super::ClassificationResult {
+        super::super::ClassificationResult {
+            id: 0,
+            kode: kode.to_string(),
+            deskripsi: String::new(),
+            path: String::new(),
+            similarity: 0.0,
+            retensi_aktif: None,
+            retensi_inaktif: None,
+            penyusutan_akhir: None,
+            klasifikasi_keamanan: None,
+        }
+    }
+
+    fn kodes(v: &[super::super::ClassificationResult]) -> Vec<String> {
+        v.iter().map(|x| x.kode.clone()).collect()
+    }
+
+    /// Kasus nyata dari pengujian PDF di VPS: induk 045.02.02 di atas anak
+    /// 045.02.02.03 yang TIDAK berdekatan (dipisah 045.02.01.02). Versi lama
+    /// (hanya tukar pasangan bersebelahan) gagal memperbaiki urutan ini.
+    #[test]
+    fn anak_di_atas_induk_walaupun_tidak_berdekatan() {
+        let input = vec![r("045.02.02"), r("045.02.01.02"), r("045.02.02.03")];
+        let out = reorder_specific_first(input);
+        assert_eq!(kodes(&out), vec!["045.02.02.03", "045.02.02", "045.02.01.02"]);
+    }
+
+    /// Urutan yang sudah benar (anak di atas induk) TIDAK diubah.
+    #[test]
+    fn urutan_benar_tidak_diubah() {
+        let input = vec![r("041.03.01.01"), r("041.03.01"), r("041.03")];
+        let out = reorder_specific_first(input);
+        assert_eq!(kodes(&out), vec!["041.03.01.01", "041.03.01", "041.03"]);
+    }
+
+    /// Kode yang tak berelasi tetap mempertahankan urutan relatifnya.
+    #[test]
+    fn kode_tak_berelasi_tetap_stabil() {
+        let input = vec![r("045.02.02"), r("045.02.02.03"), r("045.02.01.02")];
+        let out = reorder_specific_first(input);
+        // 045.02.02.03 sudah di atas induknya; sisanya tetap di urutan awal
+        assert_eq!(kodes(&out), vec!["045.02.02.03", "045.02.02", "045.02.01.02"]);
+    }
+
+    /// Berantai 3 tingkat: semua anak harus naik di atas induknya.
+    #[test]
+    fn rantai_tiga_tingkat() {
+        let input = vec![r("041.03"), r("041.03.01"), r("041.03.01.01")];
+        let out = reorder_specific_first(input);
+        assert_eq!(kodes(&out), vec!["041.03.01.01", "041.03.01", "041.03"]);
+    }
+
+    /// Interleaved: cucu (041.03.01.01) berada di ANTARA induk dan anak
+    /// (041.03 di atas, 041.03.01 di bawah). Algoritma harus stabil tanpa
+    /// osilasi dan tetap menghasilkan urutan terdalam-di-atas.
+    #[test]
+    fn cucu_di_antara_induk_dan_anak() {
+        let input = vec![r("041.03"), r("041.03.01.01"), r("041.03.01")];
+        let out = reorder_specific_first(input);
+        assert_eq!(kodes(&out), vec!["041.03.01.01", "041.03.01", "041.03"]);
+    }
+
+    /// fix_explanation_kode: kode di penjelasan disamakan dengan peringkat teratas.
+    #[test]
+    fn penjelasan_kode_ikut_peringkat_teratas() {
+        let e = "Perihal: Surat Tugas. Kode klasifikasi 045.02.02 dipilih dengan alasan relevan.";
+        assert_eq!(
+            fix_explanation_kode(e, "045.02.02.03"),
+            "Perihal: Surat Tugas. Kode klasifikasi 045.02.02.03 dipilih dengan alasan relevan."
+        );
+    }
+
+    /// fix_explanation_kode: kode sudah sama → teks tidak berubah.
+    #[test]
+    fn penjelasan_kode_sama_tidak_diubah() {
+        let e = "Perihal: X. Kode klasifikasi 045.02.02 dipilih dengan alasan Y.";
+        assert_eq!(fix_explanation_kode(e, "045.02.02"), e);
+    }
 }
