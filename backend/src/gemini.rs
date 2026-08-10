@@ -40,10 +40,17 @@ pub async fn embed_text(api_key: &str, text: &str) -> anyhow::Result<Vec<f64>> {
 /// Kembalikan (fungsi, perihal_inti, perihal_lengkap):
 /// - perihal_inti: bersih (tanpa nama orang/tempat/waktu), huruf kecil → query embedding
 /// - perihal_lengkap: detail apa adanya → tampilan UI & feedback
+///
+/// `daftar_fungsi` = string nama-nama fungsi/urusan (dipisah koma) untuk prompt;
+/// `daftar_fungsi_list` = daftar nama KANONIK (level-1, kode 3 digit) untuk
+/// validasi hasil model — bila model mengembalikan nama di luar daftar
+/// (mis. sub-urusan "PEMBINAAN KEARSIPAN"), dipetakan kembali ke nama kanonik
+/// ("KEARSIPAN") agar query embedding selalu berada di ruang level-1.
 pub async fn select_fungsi(
     api_key: &str,
     text: &str,
     daftar_fungsi: &str,
+    daftar_fungsi_list: &[String],
 ) -> anyhow::Result<(String, String, String)> {
     let client = reqwest::Client::new();
     let url = format!(
@@ -62,6 +69,11 @@ pub async fn select_fungsi(
          1. Bentuk dokumen (SOP, surat, juknis, laporan, undangan, berita acara, memo, surat edaran) BUKAN penentu klasifikasi. Klasifikasikan berdasarkan SUBSTANSI/ISI, bukan jenis dokumen. Contoh: \"SOP pelayanan perpustakaan\" → PERPUSTAKAAN (bukan ORGANISASI DAN KETATALAKSANAAN); \"juknis bantuan operasional sekolah\" → PENDIDIKAN (bukan KETATAUSAHAAN).\n\
          2. Jangan tertipu NAMA INSTANSI. Kop surat \"Dinas Perpustakaan dan Kearsipan\" TIDAK otomatis berarti KEARSIPAN — lihat isi: bila substansi layanan perpustakaan (perpustakaan, pustaka, pojok baca, literasi baca, layanan perpustakaan) → PERPUSTAKAAN.\n\
          3. Perhatikan SUBSTANSI kata kunci dalam teks: kata \"perpustakaan\", \"pustaka\", \"pojok baca\", \"literasi baca\", \"bahan pustaka\" jelas mengarah ke PERPUSTAKAAN; kata \"kearsipan\", \"arsip\", \"pengelolaan arsip\" mengarah ke KEARSIPAN.\n\n\
+         ATURAN PEMILIHAN FUNGSI — PALING PENTING:\n\
+         Fungsi/Urusan adalah KLASTER TINGKAT ATAS (level 1, kode 3 digit).\n\
+         1. Pilih SATU nama PERSIS dari Daftar Fungsi/Urusan di bawah — salin apa adanya (huruf besar/kecil sama persis). JANGAN mengubah atau menyingkat nama.\n\
+         2. JANGAN memilih sub-urusan level 2/3 (mis. \"PEMBINAAN KEARSIPAN\", \"PENGELOLAAN ARSIP\" adalah anak dari KEARSIPAN — BUKAN pilihan). Hanya nama yang TERTULIS PERSIS di daftar yang boleh dipilih.\n\
+         3. Bila substansi masuk kategori tertentu, pilih klaster induknya. Contoh: bimbingan konsultasi kearsipan → KEARSIPAN; pengelolaan simpul jaringan SIKN/JIKN → KEARSIPAN; SOP perpustakaan → PERPUSTAKAAN.\n\n\
          Daftar Fungsi/Urusan:\n{daftar}\n\n\
          Teks naskah:\n{text}\n\n\
          Keluarkan HANYA JSON valid: {{\"fungsi\":\"NAMA PERSIS DARI DAFTAR\",\"perihal_inti\":\"perihal inti huruf kecil\",\"perihal_lengkap\":\"perihal lengkap apa adanya\"}}",
@@ -81,9 +93,81 @@ pub async fn select_fungsi(
     let f = grab_field(raw, "fungsi");
     let pi = grab_field(raw, "perihal_inti");
     let pl = grab_field(raw, "perihal_lengkap");
+    // Validasi: model bisa mengembalikan nama di luar daftar 45 level-1
+    // (mis. sub-urusan "PEMBINAAN KEARSIPAN"). Petakan kembali ke nama
+    // kanonik agar query embedding selalu di ruang level-1 — kalau tidak
+    // cocok sama sekali, fungsi dikosongkan (caller fallback ke teks asli).
+    let fungsi = validate_fungsi(&f, daftar_fungsi_list);
     // perihal_inti selalu lowercase & trim (hardening: instruksi prompt saja
     // tidak cukup — model sesekali bisa mengembalikan kapital/whitespace).
-    Ok((f.trim().to_string(), pi.trim().to_lowercase(), pl.trim().to_string()))
+    Ok((fungsi, pi.trim().to_lowercase(), pl.trim().to_string()))
+}
+
+/// Petakan nama fungsi hasil model ke nama KANONIK dari daftar 45 level-1.
+/// Hardening: prompt saja tidak cukup — model sesekali mengembalikan nama
+/// sub-urusan (level 2/3) seperti "PEMBINAAN KEARSIPAN". Strategi:
+/// 1. Cocok persis (case-insensitive) → pakai nama kanonik daftar.
+/// 2. Nama hasil mengandung salah satu nama daftar (mis. "PEMBINAAN KEARSIPAN"
+///    mengandung "KEARSIPAN") → petakan ke nama kanonik terpanjang yang cocok.
+/// 3. Tidak ada kecocokan → kembalikan string kosong (caller fallback ke teks asli).
+fn validate_fungsi(fungsi: &str, daftar: &[String]) -> String {
+    let f = fungsi.trim();
+    if f.is_empty() {
+        return String::new();
+    }
+    // 1) Cocok persis (abaikan case, normalisasi spasi)
+    let f_norm = f.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+    for d in daftar {
+        let d_norm = d.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+        if d_norm == f_norm {
+            return d.trim().to_string();
+        }
+    }
+    // 2) Overlap kata (token saling substring):
+    //    - hasil memuat nama kanonik ("PEMBINAAN KEARSIPAN" memuat "KEARSIPAN")
+    //    - token hasil muncul sebagai substring nama kanonik ("PENGELOLAAN ARSIP"
+    //      → token "arsip" ada di "KEARSIPAN"; "KETATAUSAHAAN" → token ada di
+    //      "KETATAUSAHAAN DAN KERUMAHTANGGAAN"). Skor tertinggi menang.
+    let mut best: Option<(usize, &str)> = None;
+    for d in daftar {
+        let d_norm = d.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+        let score = overlap_score(&f_norm, &d_norm);
+        if score >= 4 {
+            if best.map_or(true, |(bs, _)| score > bs) {
+                best = Some((score, d.trim()));
+            }
+        }
+    }
+    if let Some((_, canon)) = best {
+        eprintln!(
+            "⚠️  select_fungsi: '{}' di luar daftar 45 → dipetakan ke '{}'",
+            f, canon
+        );
+        return canon.to_string();
+    }
+    eprintln!("⚠️  select_fungsi: '{}' tidak cocok daftar 45 → fungsi kosong", f);
+    String::new()
+}
+
+/// Skor overlap kata antara dua string ternormalisasi: jumlah panjang token
+/// yang SALING menjadi substring (minimal 4 huruf untuk hindari kecocokan
+/// semu seperti "dan"). Token dihitung dua arah — cukup sebagai peringkat
+/// relatif untuk memilih nama kanonik terdekat.
+fn overlap_score(a: &str, b: &str) -> usize {
+    let mut score = 0;
+    for tok in a.split_whitespace() {
+        let n = tok.chars().count();
+        if n >= 4 && b.contains(tok) {
+            score += n;
+        }
+    }
+    for tok in b.split_whitespace() {
+        let n = tok.chars().count();
+        if n >= 4 && a.contains(tok) {
+            score += n;
+        }
+    }
+    score
 }
 
 /// Ambil kode + deskripsi kandidat terbaik pertama (untuk fallback explanation).
@@ -461,5 +545,43 @@ mod tests {
     fn penjelasan_kode_sama_tidak_diubah() {
         let e = "Perihal: X. Kode klasifikasi 045.02.02 dipilih dengan alasan Y.";
         assert_eq!(fix_explanation_kode(e, "045.02.02"), e);
+    }
+
+    // ---------- validate_fungsi ----------
+
+    fn daftar45() -> Vec<String> {
+        vec![
+            "KEARSIPAN".to_string(),
+            "PERPUSTAKAAN".to_string(),
+            "PENDIDIKAN".to_string(),
+            "KETATAUSAHAAN DAN KERUMAHTANGGAAN".to_string(),
+        ]
+    }
+
+    /// Hasil model persis di daftar → dipertahankan.
+    #[test]
+    fn fungsi_persis_di_daftar_dipertahankan() {
+        assert_eq!(validate_fungsi("KEARSIPAN", &daftar45()), "KEARSIPAN");
+    }
+
+    /// Hasil model = sub-urusan (level-2) → dipetakan ke nama kanonik level-1.
+    #[test]
+    fn sub_urusan_dipetakan_ke_level1() {
+        // Kasus nyata: model mengembalikan PEMBINAAN KEARSIPAN (anak KEARSIPAN)
+        assert_eq!(validate_fungsi("PEMBINAAN KEARSIPAN", &daftar45()), "KEARSIPAN");
+        assert_eq!(validate_fungsi("PENGELOLAAN ARSIP", &daftar45()), "KEARSIPAN");
+    }
+
+    /// Case & whitespace tidak masalah — normalisasi sebelum cocok.
+    #[test]
+    fn fungsi_normalisasi_case_dan_spasi() {
+        assert_eq!(validate_fungsi("  kearsipan ", &daftar45()), "KEARSIPAN");
+    }
+
+    /// Tidak ada kecocokan sama sekali → kosong (caller fallback ke teks asli).
+    #[test]
+    fn fungsi_tak_kenal_dikosongkan() {
+        assert_eq!(validate_fungsi("ADMINISTRASI UMUM", &daftar45()), "");
+        assert_eq!(validate_fungsi("", &daftar45()), "");
     }
 }

@@ -291,25 +291,29 @@ fn perihal_mentah(message: &str) -> String {
 /// dari feedback belum bisa dicocokkan secara bermakna.
 /// Catatan: setiap pemanggilan select_fungsi menghabiskan 1 kuota chat.
 async fn build_embed_query(state: &AppState, api_keys: &[String], message: &str) -> (String, String, String) {
-    // Baca Fungsi/Urusan induk langsung dari DB (distinct level-1 path)
-    let daftar_fungsi: String = match sqlx::query_scalar::<_, String>(
+    // Baca Fungsi/Urusan induk langsung dari DB (distinct level-1 path).
+    // Daftar KANONIK (Vec) dipakai validasi hasil select_fungsi; versi gabungan
+    // (join) dikirim ke prompt Gemini.
+    let daftar_fungsi_list: Vec<String> = match sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT trim(deskripsi) FROM klasifikasi_embedding WHERE LENGTH(kode) = 3 ORDER BY 1"
     )
     .fetch_all(&state.db)
     .await
     {
-        Ok(rows) => rows.join(", "),
+        Ok(rows) => rows,
         Err(e) => {
             eprintln!("gagal baca fungsi DB: {e}");
-            String::new()
+            Vec::new()
         }
     };
+    let daftar_fungsi = daftar_fungsi_list.join(", ");
     match state
         .key_rotator
         .try_all_prefer(api_keys, |key| {
             let msg = message.to_string();
             let df = daftar_fungsi.clone();
-            async move { gemini::select_fungsi(&key, &msg, &df).await }
+            let df_list = daftar_fungsi_list.clone();
+            async move { gemini::select_fungsi(&key, &msg, &df, &df_list).await }
         })
         .await
     {

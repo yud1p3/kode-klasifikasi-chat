@@ -60,12 +60,6 @@ if not API_KEYS:
 
 # ---------- 2. Daftar fungsi (konsisten dengan build_embed_query) ----------
 
-def fetch_fungsi(cursor) -> str:
-    cursor.execute(
-        "SELECT DISTINCT trim(deskripsi) FROM klasifikasi_embedding WHERE LENGTH(kode) = 3 ORDER BY 1"
-    )
-    return ", ".join(r[0] for r in cursor.fetchall())
-
 # ---------- 3. select_fungsi — SALINAN backend/src/gemini.rs ----------
 
 PROMPT_SELECT_FUNGSI = (
@@ -76,6 +70,11 @@ PROMPT_SELECT_FUNGSI = (
     "1. Bentuk dokumen (SOP, surat, juknis, laporan, undangan, berita acara, memo, surat edaran) BUKAN penentu klasifikasi. Klasifikasikan berdasarkan SUBSTANSI/ISI, bukan jenis dokumen. Contoh: \"SOP pelayanan perpustakaan\" → PERPUSTAKAAN (bukan ORGANISASI DAN KETATALAKSANAAN); \"juknis bantuan operasional sekolah\" → PENDIDIKAN (bukan KETATAUSAHAAN).\n\n"
     "2. Jangan tertipu NAMA INSTANSI. Kop surat \"Dinas Perpustakaan dan Kearsipan\" TIDAK otomatis berarti KEARSIPAN — lihat isi: bila substansi layanan perpustakaan (perpustakaan, pustaka, pojok baca, literasi baca, layanan perpustakaan) → PERPUSTAKAAN.\n\n"
     "3. Perhatikan SUBSTANSI kata kunci dalam teks: kata \"perpustakaan\", \"pustaka\", \"pojok baca\", \"literasi baca\", \"bahan pustaka\" jelas mengarah ke PERPUSTAKAAN; kata \"kearsipan\", \"arsip\", \"pengelolaan arsip\" mengarah ke KEARSIPAN.\n\n"
+    "ATURAN PEMILIHAN FUNGSI — PALING PENTING:\n\n"
+    "Fungsi/Urusan adalah KLASTER TINGKAT ATAS (level 1, kode 3 digit).\n"
+    "1. Pilih SATU nama PERSIS dari Daftar Fungsi/Urusan di bawah — salin apa adanya (huruf besar/kecil sama persis). JANGAN mengubah atau menyingkat nama.\n"
+    "2. JANGAN memilih sub-urusan level 2/3 (mis. \"PEMBINAAN KEARSIPAN\", \"PENGELOLAAN ARSIP\" adalah anak dari KEARSIPAN — BUKAN pilihan). Hanya nama yang TERTULIS PERSIS di daftar yang boleh dipilih.\n"
+    "3. Bila substansi masuk kategori tertentu, pilih klaster induknya. Contoh: bimbingan konsultasi kearsipan → KEARSIPAN; pengelolaan simpul jaringan SIKN/JIKN → KEARSIPAN; SOP perpustakaan → PERPUSTAKAAN.\n\n"
     "Daftar Fungsi/Urusan:\n{daftar}\n\n"
     "Teks naskah:\n{text}\n\n"
     "Keluarkan HANYA JSON valid: {{\"fungsi\":\"NAMA PERSIS DARI DAFTAR\",\"perihal_inti\":\"perihal inti huruf kecil\",\"perihal_lengkap\":\"perihal lengkap apa adanya\"}}"
@@ -126,21 +125,79 @@ def call_embed(text: str):
     raise RuntimeError(f"Semua key gagal: {last_err}")
 
 
-def select_fungsi(text: str, daftar: str):
+def _norm(s: str) -> str:
+    return " ".join(s.lower().split())
+
+
+def _overlap_score(a: str, b: str) -> int:
+    """Skor overlap token (salinan overlap_score di gemini.rs): jumlah panjang
+    token yang saling menjadi substring (min 4 huruf), dihitung dua arah."""
+    score = 0
+    for tok in a.split():
+        n = len(tok)
+        if n >= 4 and tok in b:
+            score += n
+    for tok in b.split():
+        n = len(tok)
+        if n >= 4 and tok in a:
+            score += n
+    return score
+
+
+def validate_fungsi(fungsi: str, daftar_list: list) -> str:
+    """Petakan nama fungsi hasil model ke nama kanonik level-1 (salinan
+    validate_fungsi di backend/src/gemini.rs). Strategi:
+    1. Cocok persis (case-insensitive, normalisasi spasi).
+    2. Overlap token (mis. "PEMBINAAN KEARSIPAN" → "KEARSIPAN";
+       "PENGELOLAAN ARSIP" → "KEARSIPAN" via token "arsip" ⊂ "kearsipan").
+       Skor tertinggi menang (>= 4).
+    3. Tidak ada kecocokan → kosong (caller fallback ke teks asli)."""
+    f = fungsi.strip()
+    if not f:
+        return ""
+    f_norm = _norm(f)
+    # 1) Cocok persis
+    for d in daftar_list:
+        if _norm(d) == f_norm:
+            return d.strip()
+    # 2) Overlap token (skor tertinggi menang)
+    best = None
+    best_score = 0
+    for d in daftar_list:
+        s = _overlap_score(f_norm, _norm(d))
+        if s >= 4 and s > best_score:
+            best_score = s
+            best = d.strip()
+    if best:
+        print(f"   ⚠️ select_fungsi: '{fungsi}' di luar daftar 45 → dipetakan ke '{best}'")
+        return best
+    print(f"   ⚠️ select_fungsi: '{fungsi}' tidak cocok daftar 45 → fungsi kosong")
+    return ""
+
+
+def fetch_fungsi_list(cursor) -> list:
+    cursor.execute(
+        "SELECT DISTINCT trim(deskripsi) FROM klasifikasi_embedding WHERE LENGTH(kode) = 3 ORDER BY 1"
+    )
+    return [r[0] for r in cursor.fetchall()]
+
+
+def select_fungsi(text: str, daftar: str, daftar_list: list):
     """Kembalikan (fungsi, perihal_inti) — salinan build_embed_query main.rs."""
     prompt = PROMPT_SELECT_FUNGSI.format(daftar=daftar, text=text[:3000])
     data = call_gemini_chat(prompt)
-    fungsi = str(data.get("fungsi", "")).strip()
+    fungsi = validate_fungsi(str(data.get("fungsi", "")), daftar_list)
     inti = str(data.get("perihal_inti", "")).strip().lower()
     if fungsi and inti:
         return f"{fungsi} > {inti}"
     return text
 
 
-def build_embed_query(text: str, daftar: str) -> str:
-    """Gagal/gagal select_fungsi → fallback teks asli (sama seperti backend)."""
+def build_embed_query(text: str, daftar: str, daftar_list: list) -> str:
+    """select_fungsi → "FUNGSI > perihal_inti"; gagal/field kosong → fallback
+    teks asli (sama seperti build_embed_query di main.rs)."""
     try:
-        return select_fungsi(text, daftar)
+        return select_fungsi(text, daftar, daftar_list)
     except Exception as e:  # noqa: BLE001
         print(f"   ⚠️ select_fungsi gagal, pakai teks asli: {e}")
         return text
@@ -154,8 +211,9 @@ def main():
     conn.autocommit = True
     cur = conn.cursor()
 
-    daftar = fetch_fungsi(cur)
-    if not daftar:
+    daftar_list = fetch_fungsi_list(cur)
+    daftar = ", ".join(daftar_list)
+    if not daftar_list:
         print("❌ Daftar fungsi kosong — DB tidak punya data klasifikasi?")
         sys.exit(1)
 
@@ -180,7 +238,7 @@ def main():
             print(f"   ⏭️  id={fid}: perihal & naskah kosong — dilewati")
             continue
         try:
-            embed_query = build_embed_query(src, daftar)
+            embed_query = build_embed_query(src, daftar, daftar_list)
             vec = call_embed(embed_query)
             if len(vec) != DIM:
                 raise RuntimeError(f"dimensi embedding {len(vec)} ≠ {DIM}")
