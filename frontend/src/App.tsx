@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import mammoth from 'mammoth'
+import { BrowseView } from './components/browse/BrowseView'
 
 // Set PDF.js worker untuk versi 5.x
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
@@ -742,7 +743,7 @@ function App() {
   const [feedbackMap, setFeedbackMap] = useState<Record<number, FeedbackState>>({})
   const [correctionForm, setCorrectionForm] = useState<Record<number, CorrectionFormState>>({})
   const kodeSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [view, setView] = useState<'chat' | 'stats' | 'settings'>('chat')
+  const [view, setView] = useState<'chat' | 'browse' | 'stats' | 'settings'>('chat')
   const [stats, setStats] = useState<FeedbackStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
   const [statsFilter, setStatsFilter] = useState<StatsFilter>({ status: '', perihal: '' })
@@ -1328,6 +1329,19 @@ function App() {
           </button>
           <button
             type="button"
+            onClick={() => setView('browse')}
+            title="Browse Klasifikasi"
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+              view === 'browse'
+                ? 'bg-violet-950/60 text-violet-300 border border-violet-800/50'
+                : 'text-gray-400 hover:bg-gray-900 hover:text-white border border-transparent'
+            }`}
+          >
+            <span className="text-base">📋</span>
+            <span className="hidden md:inline">Browse</span>
+          </button>
+          <button
+            type="button"
             onClick={() => { setView('stats'); fetchStats() }}
             title="Statistik"
             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
@@ -1416,14 +1430,16 @@ function App() {
         <header className="shrink-0 px-5 py-3 bg-gray-950 border-b border-gray-800 flex items-center gap-3">
           <div className="flex flex-col gap-0.5 min-w-0">
             <h1 className="text-sm font-semibold text-white leading-tight">
-              {view === 'stats' ? '📊 Statistik Feedback' : view === 'settings' ? '⚙️ Pengaturan API Key' : '💬 Chat Asisten'}
+              {view === 'stats' ? '📊 Statistik Feedback' : view === 'settings' ? '⚙️ Pengaturan API Key' : view === 'browse' ? '📋 Browse Klasifikasi' : '💬 Chat Asisten'}
             </h1>
             <span className="hidden sm:block text-[10px] text-gray-500">
               {view === 'stats'
                 ? 'Umpan balik pengguna terhadap hasil klasifikasi'
                 : view === 'settings'
                   ? 'Kelola API Key Gemini — multi-key dengan rotasi otomatis'
-                  : 'Cari kode klasifikasi arsip dengan AI'}
+                  : view === 'browse'
+                    ? 'Telusuri klasifikasi: cari kode, navigasi induk-anak, breadcrumb'
+                    : 'Cari kode klasifikasi arsip dengan AI'}
             </span>
           </div>
           <div className="ml-auto flex items-center gap-2">
@@ -1446,7 +1462,7 @@ function App() {
 
       {/* Chat selalu di-mount (hanya disembunyikan saat di Statistik) agar sesi,
           posisi scroll, dan form koreksi yang sedang terbuka tetap terjaga */}
-      <div className={`flex-1 flex flex-col min-h-0 ${view === 'stats' || view === 'settings' ? 'hidden' : ''}`}>
+      <div className={`flex-1 flex flex-col min-h-0 ${view === 'stats' || view === 'settings' || view === 'browse' ? 'hidden' : ''}`}>
       {/* Chat Area */}
       <main className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
         {messages.length === 0 && (
@@ -1784,6 +1800,10 @@ function App() {
         </p>
         </footer>
       </div>
+
+      {view === 'browse' && (
+        <BrowseView apiBase={API_BASE} />
+      )}
 
       {view === 'stats' && (
         <StatsDashboard

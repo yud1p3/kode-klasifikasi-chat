@@ -15,6 +15,7 @@ Asisten AI berbasis **Rust + React + TypeScript** untuk mencari kode klasifikasi
 - **Sesi Anonim (chat_id)** — setiap browser punya ID sesi acak (localStorage, UUID v4) yang dikirim bersama feedback; feedback anonim tetap bisa dikelompokkan per sesi chat untuk analisis. ID ini hanya angka acak di browser (bukan data perangkat/fingerprint teknis)
 - **Multi-Key Rotasi** — Beberapa API key gratis dirotasi otomatis; saat satu key kena 429 rate limit, permintaan dialihkan ke key berikutnya
 - **Pengaturan API Key (multi-key) di Frontend** — Menu Pengaturan untuk menyimpan banyak key per pengguna (localStorage), dengan tombol toggle lihat/sembunyikan; key dikirim berurutan ke backend dan dirotasi otomatis sebelum fallback ke key server
+- **Browse Klasifikasi** — Halaman telusur (📋 Browse): cari kode klasifikasi (keyword ILIKE, **gratis tanpa kuota AI**), navigasi parent-child, dan breadcrumb — memakai endpoint `/api/browse/*` langsung ke PostgreSQL (tanpa Meilisearch)
 - **Statistik Feedback dengan Filter** — Dashboard statistik bisa difilter perihal (kata kunci) & status (valid/ditolak/pending)
 - **Hapus Feedback (Admin)** — Hanya email di `ADMIN_EMAILS` yang bisa menghapus feedback, dengan password secret `DELETE_SECRET`
 - **Rate Limit Protection** — Cooldown timer di frontend + rate limiter di backend (10 detik per request)
@@ -132,6 +133,10 @@ Catatan: `GEMINI_API_KEYS` adalah key **server**. Pengguna juga bisa menyimpan k
 | GET | `/api/health` | Health check |
 | POST | `/api/chat` | Chat klasifikasi (**tanpa login**; rate limit & kuota tetap berlaku) |
 | POST | `/api/extract-pdf` | Ekstrak teks dari file PDF via pdf-inspector (multipart, field `file`; **tanpa login**) |
+| GET | `/api/browse/roots` | Akar klasifikasi (level-1) dengan pagination `?offset=&limit=` → `{items, total}` |
+| GET | `/api/browse/children` | Anak dari induk tertentu `?parent_id=<id>&offset=&limit=` → `{items, total}` |
+| GET | `/api/browse/document` | Satu klasifikasi by id `?id=<id>` → objek tunggal (untuk membangun breadcrumb) |
+| GET | `/api/browse/search` | Pencarian keyword `?q=<teks>&kode_prefix=<kode>&offset=&limit=` (ILIKE pada kode/deskripsi/path; `kode_prefix` membatasi hasil di dalam cabang tertentu) |
 | GET | `/api/feedback/stats` | Statistik feedback (terbuka, tanpa login); filter opsional `?perihal=...&status=validated\|rejected\|pending` |
 | DELETE | `/api/feedback/{id}` | Hapus feedback (khusus admin: `ADMIN_EMAILS` + body `{"password": "..."}` = `DELETE_SECRET`; anti brute-force: 5 gagal → 429 lockout 15 mnt) |
 | GET | `/api/me` | Info user login + `is_admin` |
@@ -209,6 +214,7 @@ Panduan lengkap: [`srikandi-extension/README.md`](srikandi-extension/README.md)
 - Fungsi/Urusan (klaster 1): Kepegawaian, Keuangan, Pendidikan, Kesehatan, dll
 - Sub-klasifikasi hingga level 5
 - Embedding 768 dimensi via `gemini-embedding-2`
+- **45 root level-1**, semua relasi parent–child valid (0 anak yatim); ada **12 kode duplikat** (24 record) yang merupakan struktur asli SKKAD — lihat [docs/AUDIT_DATA.md](docs/AUDIT_DATA.md) untuk hasil audit lengkap & cara menjalankan ulang
 
 ---
 

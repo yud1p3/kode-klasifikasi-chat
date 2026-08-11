@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod auth;
+mod browse;
 mod dikecualikan;
 mod feedback;
 mod gemini;
@@ -1602,6 +1603,12 @@ async fn main() -> anyhow::Result<()> {
             .route("/api/feedback/bulk-delete", web::post().to(bulk_delete_feedback))
             .route("/api/feedback/{id}", web::delete().to(delete_feedback))
             .route("/api/codes", web::get().to(codes_search))
+            // Fitur browse klasifikasi (pengganti Meilisearch — langsung ke PostgreSQL):
+            // navigasi parent-child, breadcrumb, dan pencarian keyword (ILIKE, gratis).
+            .route("/api/browse/roots", web::get().to(browse::roots))
+            .route("/api/browse/children", web::get().to(browse::children))
+            .route("/api/browse/document", web::get().to(browse::document))
+            .route("/api/browse/search", web::get().to(browse::search))
             .route("/api/dikecualikan/kode-rahasia", web::get().to(kode_rahasia))
     })
     .bind((host.as_str(), port))?
