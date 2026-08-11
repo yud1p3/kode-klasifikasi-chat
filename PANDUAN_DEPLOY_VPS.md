@@ -141,6 +141,52 @@ sudo -u postgres psql -d klasifikasi_arsip -tAc \
 
 > **Script otomatis:** `deploy/db-setup-vps.sh` (STEP4b) sudah melakukan langkah 1 + 2 sekaligus bila file CSV ada di `/tmp/kkl-migrate/` — tinggal jalankan script itu.
 
+### 3e. Perbaikan relasi `parent_id` untuk navigasi Browse (SEKALI per VPS)
+
+Halaman Browse (menu 📋) memakai relasi parent–child (`parent_id`) untuk navigasi induk–anak dan breadcrumb. Sebagian record di database lama memiliki `parent_id` yang salah (0/NULL pada kode bertitik, atau menunjuk induk yang keliru) — perlu diselaraskan ke **CSV sumber SKKAD** (sumber kebenaran, sama dengan data yang pernah dikoreksi di aplikasi browser-klasifikasi lama).
+
+**Cara tercepat — script `tools/perbaiki_parent_id.py`** (sudah dipakai di lokal; dry-run default, `--apply` untuk menerapkan):
+
+```bash
+# 1. Kirim script + CSV sumber ke VPS (dari WSL):
+scp -i ~/.ssh/hermes_key tools/perbaiki_parent_id.py siapdev@<IP-VPS>:/tmp/
+scp -i ~/.ssh/hermes_key /home/yudi/klasifikasi_arsip_2026-07-02.csv siapdev@<IP-VPS>:/tmp/
+
+# 2. Di VPS — pastikan psycopg2 ada:
+python3 -c "import psycopg2" 2>/dev/null || sudo apt-get install -y python3-psycopg2
+
+# 3. Ambil kredensial DB dari .env, lalu dry-run (HARUS tampil 28 record):
+cd ~/apps/kode-klasifikasi
+export DATABASE_URL=$(grep '^DATABASE_URL=' .env | cut -d= -f2-)
+python3 /tmp/perbaiki_parent_id.py --csv /tmp/klasifikasi_arsip_2026-07-02.csv
+
+# 4. Jika jumlah record cocok → terapkan:
+python3 /tmp/perbaiki_parent_id.py --apply --csv /tmp/klasifikasi_arsip_2026-07-02.csv
+# Harusnya: "✅ 28 record diperbarui." dan "Sisa parent_id invalid ... : 0"
+
+# 5. Bersihkan:
+rm -f /tmp/perbaiki_parent_id.py /tmp/klasifikasi_arsip_2026-07-02.csv
+```
+
+> ⚠️ **Penting:** dry-run **harus** menampilkan tepat **28 record** (8 anomali `parent_id=0/NULL` pada kode bertitik + 20 mismatch vs CSV). Dua record (`185597`, `185624`) **sengaja dilewati** — struktur SKKAD asli yang memang tidak mengikuti pola kode. Jika jumlahnya berbeda, **jangan `--apply`** — periksa dulu apakah VPS sudah pernah dimigrasi.
+
+**Verifikasi navigasi setelah migrasi (di VPS):**
+
+```bash
+# 45 root level-1:
+curl -s 'http://127.0.0.1:3000/api/browse/roots?limit=100' | grep -oE '"total":[0-9]+'
+
+# 590 AGRARIA kini punya anak 590.01 (bukti perbaikan data):
+curl -s 'http://127.0.0.1:3000/api/browse/children?parent_id=187823&limit=5' | grep -oE '"kode":"[^"]*"'
+
+# 0 anak yatim (parent menunjuk id yang tidak ada):
+sudo -u postgres psql -d klasifikasi_arsip -tAc \
+  "SELECT count(*) FROM klasifikasi_embedding e LEFT JOIN klasifikasi_embedding p ON p.id = e.parent_id WHERE e.parent_id IS NOT NULL AND e.parent_id != 0 AND p.id IS NULL"
+# → 0
+```
+
+> Relasi sudah benar bila: roots = 45, `590 → 590.01` muncul, yatim = 0, dan jumlah anak valid = 5.489 (sama dengan lokal).
+
 ---
 
 ## 4. Pencarian Semantic via pgvector (TANPA Meilisearch)
