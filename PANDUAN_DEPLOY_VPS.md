@@ -304,6 +304,21 @@ curl -s https://liqueur-douche-defuse.ngrok-free.dev/api/dikecualikan/kode-rahas
 #    · hasil kandidat menampilkan badge 🔒 klasifikasi + 🗓️ retensi + ♻️ penyusutan
 ```
 
+> **Pengujian otomatis (Playwright/headless) via domain ngrok** — ngrok gratis menampilkan
+> halaman peringatan interstitial ("You are about to visit ... served by ...") untuk browser
+> baru/headless. Ini **bukan** masalah aplikasi — cukup lewati salah satu cara:
+>
+> - **Browser manual:** klik "Visit Site" sekali (domain akan diingat).
+> - **Otomatis (Playwright):** suntikkan header resmi ke semua request — cookie `ngrok-skip-browser-warning` **tidak cukup**:
+>   ```js
+>   await page.route('**/*', route => {
+>     const h = { ...route.request().headers(), 'ngrok-skip-browser-warning': 'true' }
+>     route.continue({ headers: h })
+>   })
+>   await page.goto('https://<domain>.ngrok-free.dev', { waitUntil: 'networkidle' })
+>   ```
+> - **curl:** header yang sama, `curl -s -H 'ngrok-skip-browser-warning: true' https://<domain>.ngrok-free.dev/api/health`
+
 ---
 
 ## 9. Update Aplikasi (Deploy Ulang)
