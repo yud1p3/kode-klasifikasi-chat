@@ -39,6 +39,17 @@ Asisten AI berbasis **Rust + React + TypeScript** untuk mencari kode klasifikasi
 
 ---
 
+## Keputusan Arsitektur (ADR)
+
+Keputusan arsitektur penting didokumentasikan sebagai Architecture Decision Records di [`docs/adr/`](docs/adr/):
+
+| ADR | Topik | Ringkasan |
+|-----|-------|-----------|
+| [ADR-0001](docs/adr/0001-arsitektur-postgresql-only.md) | Arsitektur PostgreSQL-only | Hapus Meilisearch; search selalu via pgvector; chat & feedback positif tanpa login |
+| [ADR-0002](docs/adr/0002-browse-postgresql-keyword.md) | Browse Klasifikasi via PostgreSQL | Halaman browse pakai endpoint `/api/browse/*` langsung ke PostgreSQL — pencarian keyword ILIKE (gratis, tanpa kuota AI), bukan hybrid Meilisearch |
+
+---
+
 ## Prasyarat
 
 - **Rust** 1.96+
